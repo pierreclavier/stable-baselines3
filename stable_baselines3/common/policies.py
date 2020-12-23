@@ -225,7 +225,12 @@ class BasePolicy(BaseModel):
                 module.bias.data.fill_(0.0)
 
     @abstractmethod
-    def _predict(self, observation: th.Tensor, deterministic: bool = False) -> th.Tensor:
+    def _predict(
+        self,
+        observation: th.Tensor,
+        deterministic: bool = False,
+        action_masks: np.ndarray = None
+    ) -> th.Tensor:
         """
         Get the action according to the policy for a given observation.
 
@@ -234,6 +239,7 @@ class BasePolicy(BaseModel):
 
         :param observation:
         :param deterministic: Whether to use stochastic or deterministic actions
+        :param action_masks: Action masks to apply to the action distribution
         :return: Taken action according to the policy
         """
 
@@ -243,6 +249,7 @@ class BasePolicy(BaseModel):
         state: Optional[np.ndarray] = None,
         mask: Optional[np.ndarray] = None,
         deterministic: bool = False,
+        action_masks: np.ndarray = None
     ) -> Tuple[np.ndarray, Optional[np.ndarray]]:
         """
         Get the policy action and state from an observation (and optional state).
@@ -252,6 +259,7 @@ class BasePolicy(BaseModel):
         :param state: The last states (can be None, used in recurrent policies)
         :param mask: The last masks (can be None, used in recurrent policies)
         :param deterministic: Whether or not to return deterministic actions.
+        :param action_masks: Action masks to apply to the action distribution
         :return: the model's action and the next state
             (used in recurrent policies)
         """
@@ -285,7 +293,7 @@ class BasePolicy(BaseModel):
 
         observation = th.as_tensor(observation).to(self.device)
         with th.no_grad():
-            actions = self._predict(observation, deterministic=deterministic)
+            actions = self._predict(observation, deterministic=deterministic, action_masks=action_masks)
         # Convert to numpy
         actions = actions.cpu().numpy()
 
@@ -535,18 +543,28 @@ class ActorCriticPolicy(BasePolicy):
         # Setup optimizer with initial learning rate
         self.optimizer = self.optimizer_class(self.parameters(), lr=lr_schedule(1), **self.optimizer_kwargs)
 
-    def forward(self, obs: th.Tensor, deterministic: bool = False) -> Tuple[th.Tensor, th.Tensor, th.Tensor]:
+    def forward(
+        self,
+        obs: th.Tensor,
+        deterministic: bool = False,
+        action_masks: np.ndarray = None,
+    ) -> Tuple[th.Tensor, th.Tensor, th.Tensor]:
         """
         Forward pass in all the networks (actor and critic)
 
         :param obs: Observation
         :param deterministic: Whether to sample or use deterministic actions
+        :param action_masks: Action masks to apply to the action distribution
         :return: action, value and log probability of the action
         """
         latent_pi, latent_vf, latent_sde = self._get_latent(obs)
         # Evaluate the values for the given observations
         values = self.value_net(latent_vf)
         distribution = self._get_action_dist_from_latent(latent_pi, latent_sde=latent_sde)
+        if action_masks is not None:
+            # Currently, only certain distributions support masking
+            if isinstance(distribution, CategoricalDistribution):
+                distribution.distribution.apply_masking(action_masks)
         actions = distribution.get_actions(deterministic=deterministic)
         log_prob = distribution.log_prob(actions)
         return actions, values, log_prob
@@ -596,16 +614,25 @@ class ActorCriticPolicy(BasePolicy):
         else:
             raise ValueError("Invalid action distribution")
 
-    def _predict(self, observation: th.Tensor, deterministic: bool = False) -> th.Tensor:
+    def _predict(
+        self,
+        observation: th.Tensor,
+        deterministic: bool = False,
+        action_masks: np.ndarray = None
+    ) -> th.Tensor:
         """
         Get the action according to the policy for a given observation.
 
         :param observation:
         :param deterministic: Whether to use stochastic or deterministic actions
+        :param action_masks: Action masks to apply to the action distribution
         :return: Taken action according to the policy
         """
         latent_pi, _, latent_sde = self._get_latent(observation)
         distribution = self._get_action_dist_from_latent(latent_pi, latent_sde)
+        if action_masks is not None:
+            if isinstance(distribution, CategoricalDistribution):
+                distribution.distribution.apply_masking(action_masks)
         return distribution.get_actions(deterministic=deterministic)
 
     def evaluate_actions(self, obs: th.Tensor, actions: th.Tensor) -> Tuple[th.Tensor, th.Tensor, th.Tensor]:

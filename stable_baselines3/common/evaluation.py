@@ -5,7 +5,9 @@ import gym
 import numpy as np
 
 from stable_baselines3.common import base_class
-from stable_baselines3.common.vec_env import VecEnv
+from stable_baselines3.common.vec_env import VecEnv, is_vecenv_wrapped
+from stable_baselines3.common.vec_env.wrappers import VecActionMasker
+from stable_baselines3.common.wrappers import ActionMasker
 
 
 def evaluate_policy(
@@ -51,6 +53,8 @@ def evaluate_policy(
         (in number of steps).
     """
     is_monitor_wrapped = False
+    is_action_masked = False
+
     # Avoid circular import
     from stable_baselines3.common.env_util import is_wrapped
     from stable_baselines3.common.monitor import Monitor
@@ -58,8 +62,10 @@ def evaluate_policy(
     if isinstance(env, VecEnv):
         assert env.num_envs == 1, "You must pass only one environment when using this function"
         is_monitor_wrapped = env.env_is_wrapped(Monitor)[0]
+        is_action_masked = is_vecenv_wrapped(env, VecActionMasker)
     else:
         is_monitor_wrapped = is_wrapped(env, Monitor)
+        is_action_masked = is_wrapped(ActionMasker)
 
     if not is_monitor_wrapped and warn:
         warnings.warn(
@@ -82,7 +88,8 @@ def evaluate_policy(
         episode_reward = 0.0
         episode_length = 0
         while not done:
-            action, state = model.predict(obs, state=state, deterministic=deterministic)
+            action_masks = env.valid_actions() if is_action_masked else None
+            action, state = model.predict(obs, state=state, deterministic=deterministic, action_masks=action_masks)
             obs, reward, done, info = env.step(action)
             episode_reward += reward
             if callback is not None:

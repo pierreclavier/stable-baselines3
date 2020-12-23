@@ -1,8 +1,8 @@
-from typing import Any, Dict, Optional, Type, Union
+from typing import Any, Callable, Dict, Optional, Type, Union
 
 import numpy as np
 import torch as th
-from gym import spaces
+from gym import Env, spaces
 from torch.nn import functional as F
 
 from stable_baselines3.common import logger
@@ -87,6 +87,7 @@ class PPO(OnPolicyAlgorithm):
         seed: Optional[int] = None,
         device: Union[th.device, str] = "auto",
         _init_setup_model: bool = True,
+        action_mask_fn: Union[str, Callable[[Env], np.ndarray]] = None,
     ):
 
         super(PPO, self).__init__(
@@ -114,6 +115,7 @@ class PPO(OnPolicyAlgorithm):
                 spaces.MultiDiscrete,
                 spaces.MultiBinary,
             ),
+            action_mask_fn=action_mask_fn,
         )
 
         self.batch_size = batch_size

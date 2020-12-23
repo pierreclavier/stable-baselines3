@@ -5,7 +5,7 @@ import pathlib
 import time
 from abc import ABC, abstractmethod
 from collections import deque
-from typing import Any, Dict, Iterable, List, Optional, Tuple, Type, Union
+from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple, Type, Union
 
 import gym
 import numpy as np
@@ -27,6 +27,7 @@ from stable_baselines3.common.utils import (
     set_random_seed,
     update_learning_rate,
 )
+from stable_baselines3.common.wrappers import ActionMasker
 from stable_baselines3.common.vec_env import (
     DummyVecEnv,
     VecEnv,
@@ -36,6 +37,7 @@ from stable_baselines3.common.vec_env import (
     unwrap_vec_normalize,
 )
 from stable_baselines3.common.vec_env.obs_dict_wrapper import ObsDictWrapper
+from stable_baselines3.common.vec_env.wrappers import VecActionMasker
 
 
 def maybe_make_env(env: Union[GymEnv, str, None], verbose: int) -> Optional[GymEnv]:
@@ -99,6 +101,7 @@ class BaseAlgorithm(ABC):
         use_sde: bool = False,
         sde_sample_freq: int = -1,
         supported_action_spaces: Optional[Tuple[gym.spaces.Space, ...]] = None,
+        action_mask_fn: Union[str, Callable[[gym.Env], np.ndarray]] = None,
     ):
 
         if isinstance(policy, str) and policy_base is not None:
@@ -145,6 +148,8 @@ class BaseAlgorithm(ABC):
         self.ep_success_buffer = None  # type: Optional[deque]
         # For logging
         self._n_updates = 0  # type: int
+        # Action masking state
+        self.action_mask_fn = action_mask_fn
 
         # Create and wrap the env if needed
         if env is not None:
@@ -153,7 +158,7 @@ class BaseAlgorithm(ABC):
                     self.eval_env = maybe_make_env(env, self.verbose)
 
             env = maybe_make_env(env, self.verbose)
-            env = self._wrap_env(env, self.verbose, monitor_wrapper)
+            env = self._wrap_env(env, self.verbose, monitor_wrapper, self.action_mask_fn)
 
             self.observation_space = env.observation_space
             self.action_space = env.action_space
@@ -175,7 +180,12 @@ class BaseAlgorithm(ABC):
                 raise ValueError("generalized State-Dependent Exploration (gSDE) can only be used with continuous actions.")
 
     @staticmethod
-    def _wrap_env(env: GymEnv, verbose: int = 0, monitor_wrapper: bool = True) -> VecEnv:
+    def _wrap_env(
+        env: GymEnv,
+        verbose: int = 0,
+        monitor_wrapper: bool = True,
+        action_mask_fn: Union[str, Callable[[gym.Env], np.ndarray]] = None
+    ) -> VecEnv:
         """ "
         Wrap environment with the appropriate wrappers if needed.
         For instance, to have a vectorized environment
@@ -191,6 +201,10 @@ class BaseAlgorithm(ABC):
                 if verbose >= 1:
                     print("Wrapping the env with a `Monitor` wrapper")
                 env = Monitor(env)
+            if not is_wrapped(env, ActionMasker) and action_mask_fn is not None:
+                if verbose >= 1:
+                    print("Wrapping the env with a `ActionMasker` wrapper")
+                env = ActionMasker(env, action_mask_fn)
             if verbose >= 1:
                 print("Wrapping the env in a DummyVecEnv.")
             env = DummyVecEnv([lambda: env])
@@ -203,6 +217,10 @@ class BaseAlgorithm(ABC):
             if verbose >= 1:
                 print("Wrapping the env in a VecTransposeImage.")
             env = VecTransposeImage(env)
+
+        # If env is wrapped with ActionMasker, wrap the VecEnv as well for convenience
+        if all(env.env_is_wrapped(ActionMasker)):
+            env = VecActionMasker(env)
 
         # check if wrapper for dict support is needed when using HER
         if isinstance(env.observation_space, gym.spaces.dict.Dict):
@@ -225,7 +243,7 @@ class BaseAlgorithm(ABC):
             eval_env = self.eval_env
 
         if eval_env is not None:
-            eval_env = self._wrap_env(eval_env, self.verbose)
+            eval_env = self._wrap_env(eval_env, self.verbose, self.action_mask_fn)
             assert eval_env.num_envs == 1
         return eval_env
 
@@ -441,7 +459,7 @@ class BaseAlgorithm(ABC):
         """
         # if it is not a VecEnv, make it a VecEnv
         # and do other transformations (dict obs, image transpose) if needed
-        env = self._wrap_env(env, self.verbose)
+        env = self._wrap_env(env, self.verbose, self.action_mask_fn)
         # Check that the observation spaces match
         check_for_correct_spaces(env, self.observation_space, self.action_space)
 
@@ -482,6 +500,7 @@ class BaseAlgorithm(ABC):
         state: Optional[np.ndarray] = None,
         mask: Optional[np.ndarray] = None,
         deterministic: bool = False,
+        action_masks: np.ndarray = None,
     ) -> Tuple[np.ndarray, Optional[np.ndarray]]:
         """
         Get the model's action(s) from an observation
@@ -490,10 +509,11 @@ class BaseAlgorithm(ABC):
         :param state: The last states (can be None, used in recurrent policies)
         :param mask: The last masks (can be None, used in recurrent policies)
         :param deterministic: Whether or not to return deterministic actions.
+        :param action_masks: Action masks to apply to the action distribution.
         :return: the model's action and the next state
             (used in recurrent policies)
         """
-        return self.policy.predict(observation, state, mask, deterministic)
+        return self.policy.predict(observation, state, mask, deterministic, action_masks=action_masks)
 
     def set_random_seed(self, seed: Optional[int] = None) -> None:
         """

@@ -8,7 +8,9 @@ import numpy as np
 
 from stable_baselines3.common import base_class, logger  # pytype: disable=pyi-error
 from stable_baselines3.common.evaluation import evaluate_policy
-from stable_baselines3.common.vec_env import DummyVecEnv, VecEnv, sync_envs_normalization
+from stable_baselines3.common.vec_env import DummyVecEnv, VecEnv, is_vecenv_wrapped, sync_envs_normalization
+from stable_baselines3.common.vec_env.wrappers import VecActionMasker
+from stable_baselines3.common.wrappers import ActionMasker
 
 
 class BaseCallback(ABC):
@@ -301,13 +303,6 @@ class EvalCallback(EventCallback):
         self.render = render
         self.warn = warn
 
-        # Convert to VecEnv for consistency
-        if not isinstance(eval_env, VecEnv):
-            eval_env = DummyVecEnv([lambda: eval_env])
-
-        if isinstance(eval_env, VecEnv):
-            assert eval_env.num_envs == 1, "You must pass only one environment for evaluation"
-
         self.eval_env = eval_env
         self.best_model_save_path = best_model_save_path
         # Logs will be written in ``evaluations.npz``
@@ -322,6 +317,22 @@ class EvalCallback(EventCallback):
         self.evaluations_successes = []
 
     def _init_callback(self) -> None:
+        if not isinstance(self.eval_env, VecEnv):
+            # Avoid circular import
+            from stable_baselines3.common.env_util import is_wrapped
+
+            # Port over wrappers as necessary
+            if is_vecenv_wrapped(self.training_env, VecActionMasker) and not is_wrapped(self.eval_env, ActionMasker):
+                if self.verbose > 0:
+                    print("Wrapping evaluation environment for action masking")
+                self.eval_env = ActionMasker(self.eval_env, self.model.action_mask_fn)
+
+            self.eval_env = DummyVecEnv([lambda: self.eval_env])
+            if is_vecenv_wrapped(self.training_env, VecActionMasker):
+                self.eval_env = VecActionMasker(self.eval_env)
+
+        assert self.eval_env.num_envs == 1, "You must pass only one environment for evaluation"
+
         # Does not work in some corner cases, where the wrapper is not the same
         if not isinstance(self.training_env, type(self.eval_env)):
             warnings.warn("Training and eval env are not of the same type" f"{self.training_env} != {self.eval_env}")

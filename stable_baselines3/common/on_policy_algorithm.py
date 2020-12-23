@@ -1,5 +1,5 @@
 import time
-from typing import Any, Dict, List, Optional, Tuple, Type, Union
+from typing import Any, Callable, Dict, List, Optional, Tuple, Type, Union
 
 import gym
 import numpy as np
@@ -12,7 +12,8 @@ from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.policies import ActorCriticPolicy
 from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, Schedule
 from stable_baselines3.common.utils import safe_mean
-from stable_baselines3.common.vec_env import VecEnv
+from stable_baselines3.common.vec_env import VecEnv, is_vecenv_wrapped
+from stable_baselines3.common.vec_env.wrappers import VecActionMasker
 
 
 class OnPolicyAlgorithm(BaseAlgorithm):
@@ -71,6 +72,7 @@ class OnPolicyAlgorithm(BaseAlgorithm):
         device: Union[th.device, str] = "auto",
         _init_setup_model: bool = True,
         supported_action_spaces: Optional[Tuple[gym.spaces.Space, ...]] = None,
+        action_mask_fn: Union[str, Callable[[gym.Env], np.ndarray]] = None,
     ):
 
         super(OnPolicyAlgorithm, self).__init__(
@@ -88,6 +90,7 @@ class OnPolicyAlgorithm(BaseAlgorithm):
             seed=seed,
             tensorboard_log=tensorboard_log,
             supported_action_spaces=supported_action_spaces,
+            action_mask_fn=action_mask_fn,
         )
 
         self.n_steps = n_steps
@@ -141,6 +144,7 @@ class OnPolicyAlgorithm(BaseAlgorithm):
         """
         assert self._last_obs is not None, "No previous observation was provided"
         n_steps = 0
+        action_masks = None
         rollout_buffer.reset()
         # Sample new weights for the state dependent exploration
         if self.use_sde:
@@ -156,7 +160,11 @@ class OnPolicyAlgorithm(BaseAlgorithm):
             with th.no_grad():
                 # Convert to pytorch tensor
                 obs_tensor = th.as_tensor(self._last_obs).to(self.device)
-                actions, values, log_probs = self.policy.forward(obs_tensor)
+
+                if is_vecenv_wrapped(env, VecActionMasker):
+                    action_masks = env.valid_actions()
+
+                actions, values, log_probs = self.policy.forward(obs_tensor, action_masks=action_masks)
             actions = actions.cpu().numpy()
 
             # Rescale and perform action
@@ -187,7 +195,11 @@ class OnPolicyAlgorithm(BaseAlgorithm):
         with th.no_grad():
             # Compute value for the last timestep
             obs_tensor = th.as_tensor(new_obs).to(self.device)
-            _, values, _ = self.policy.forward(obs_tensor)
+
+            if is_vecenv_wrapped(env, VecActionMasker):
+                action_masks = env.valid_actions()
+
+            _, values, _ = self.policy.forward(obs_tensor, action_masks=action_masks)
 
         rollout_buffer.compute_returns_and_advantage(last_values=values, dones=dones)
 
@@ -223,7 +235,6 @@ class OnPolicyAlgorithm(BaseAlgorithm):
         callback.on_training_start(locals(), globals())
 
         while self.num_timesteps < total_timesteps:
-
             continue_training = self.collect_rollouts(self.env, callback, self.rollout_buffer, n_rollout_steps=self.n_steps)
 
             if continue_training is False:

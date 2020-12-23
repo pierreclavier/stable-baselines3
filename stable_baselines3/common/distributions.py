@@ -4,6 +4,7 @@ from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 import gym
+import numpy as np
 import torch as th
 from gym import spaces
 from torch import nn
@@ -246,6 +247,41 @@ class SquashedDiagGaussianDistribution(DiagGaussianDistribution):
         return action, log_prob
 
 
+class MaskedCategorical(Categorical):
+    # Adapted from https://github.com/vwxyzjn/invalid-action-masking
+
+    def __init__(self, probs=None, logits=None, validate_args=None, masks: Optional[np.ndarray] = None):
+        self.masks: th.tensor = None
+        super().__init__(probs, logits, validate_args)
+        self.apply_masking(masks)
+
+    def apply_masking(self, masks: Optional[np.ndarray]) -> None:
+        if masks is not None:
+            device = self.logits.device
+            self.masks = th.as_tensor(masks, dtype=th.bool, device=device)
+            HUGE_NEG = th.tensor(-1e+8, dtype=self.logits.dtype, device=device)
+
+            logits = th.where(self.masks, self.logits, HUGE_NEG)
+        else:
+            self.masks = None
+            logits = self.logits
+
+        # Reinitialize updated logits
+        super().__init__(logits=logits)
+
+    def entropy(self):
+        if self.masks is None:
+            return super().entropy()
+
+        # Highly negative logits don't result in 0 probs, so we must replace
+        # with 0s to ensure 0 contribution to the distribution's entropy, since
+        # masked actions possess no uncertainty.
+        device = self.logits.device
+        p_log_p = self.logits * self.probs
+        p_log_p = th.where(self.masks, p_log_p, th.tensor(0., device=device))
+        return -p_log_p.sum(-1)
+
+
 class CategoricalDistribution(Distribution):
     """
     Categorical distribution for discrete actions.
@@ -272,7 +308,7 @@ class CategoricalDistribution(Distribution):
         return action_logits
 
     def proba_distribution(self, action_logits: th.Tensor) -> "CategoricalDistribution":
-        self.distribution = Categorical(logits=action_logits)
+        self.distribution = MaskedCategorical(logits=action_logits)
         return self
 
     def log_prob(self, actions: th.Tensor) -> th.Tensor:
