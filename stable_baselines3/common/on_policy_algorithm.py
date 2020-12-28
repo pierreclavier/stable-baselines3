@@ -188,7 +188,7 @@ class OnPolicyAlgorithm(BaseAlgorithm):
             if isinstance(self.action_space, gym.spaces.Discrete):
                 # Reshape in case of discrete action
                 actions = actions.reshape(-1, 1)
-            rollout_buffer.add(self._last_obs, actions, rewards, self._last_dones, values, log_probs)
+            rollout_buffer.add(self._last_obs, actions, rewards, self._last_dones, values, log_probs, action_masks)
             self._last_obs = new_obs
             self._last_dones = dones
 
@@ -196,10 +196,10 @@ class OnPolicyAlgorithm(BaseAlgorithm):
             # Compute value for the last timestep
             obs_tensor = th.as_tensor(new_obs).to(self.device)
 
-            if is_vecenv_wrapped(env, VecActionMasker):
-                action_masks = env.valid_actions()
-
-            _, values, _ = self.policy.forward(obs_tensor, action_masks=action_masks)
+            # if is_vecenv_wrapped(env, VecActionMasker):
+            #     action_masks = env.valid_actions()
+            #
+            _, values, _ = self.policy.forward(obs_tensor)  #, action_masks=action_masks)
 
         rollout_buffer.compute_returns_and_advantage(last_values=values, dones=dones)
 

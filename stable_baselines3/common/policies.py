@@ -635,7 +635,9 @@ class ActorCriticPolicy(BasePolicy):
                 distribution.distribution.apply_masking(action_masks)
         return distribution.get_actions(deterministic=deterministic)
 
-    def evaluate_actions(self, obs: th.Tensor, actions: th.Tensor) -> Tuple[th.Tensor, th.Tensor, th.Tensor]:
+    def evaluate_actions(
+        self, obs: th.Tensor, actions: th.Tensor, action_masks: np.ndarray = None
+    ) -> Tuple[th.Tensor, th.Tensor, th.Tensor]:
         """
         Evaluate actions according to the current policy,
         given the observations.
@@ -647,6 +649,9 @@ class ActorCriticPolicy(BasePolicy):
         """
         latent_pi, latent_vf, latent_sde = self._get_latent(obs)
         distribution = self._get_action_dist_from_latent(latent_pi, latent_sde)
+        if action_masks is not None:
+            if isinstance(distribution, CategoricalDistribution):
+                distribution.distribution.apply_masking(action_masks)
         log_prob = distribution.log_prob(actions)
         values = self.value_net(latent_vf)
         return values, log_prob, distribution.entropy()

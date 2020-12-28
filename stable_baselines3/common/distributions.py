@@ -258,7 +258,7 @@ class MaskedCategorical(Categorical):
     def apply_masking(self, masks: Optional[np.ndarray]) -> None:
         if masks is not None:
             device = self.logits.device
-            self.masks = th.as_tensor(masks, dtype=th.bool, device=device)
+            self.masks = th.as_tensor(masks, dtype=th.bool, device=device).reshape(self.logits.shape)
             HUGE_NEG = th.tensor(-1e+8, dtype=self.logits.dtype, device=device)
 
             logits = th.where(self.masks, self.logits, HUGE_NEG)

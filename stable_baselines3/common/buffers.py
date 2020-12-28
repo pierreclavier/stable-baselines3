@@ -293,7 +293,7 @@ class RolloutBuffer(BaseBuffer):
         super(RolloutBuffer, self).__init__(buffer_size, observation_space, action_space, device, n_envs=n_envs)
         self.gae_lambda = gae_lambda
         self.gamma = gamma
-        self.observations, self.actions, self.rewards, self.advantages = None, None, None, None
+        self.observations, self.actions, self.action_masks, self.rewards, self.advantages = None, None, None, None, None
         self.returns, self.dones, self.values, self.log_probs = None, None, None, None
         self.generator_ready = False
         self.reset()
@@ -301,6 +301,8 @@ class RolloutBuffer(BaseBuffer):
     def reset(self) -> None:
         self.observations = np.zeros((self.buffer_size, self.n_envs) + self.obs_shape, dtype=np.float32)
         self.actions = np.zeros((self.buffer_size, self.n_envs, self.action_dim), dtype=np.float32)
+        # TODO: need to handle different action_space attrs based on shape
+        self.action_masks = np.ones((self.buffer_size, self.n_envs, self.action_space.n), dtype=np.float32)
         self.rewards = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
         self.returns = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
         self.dones = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
@@ -342,7 +344,14 @@ class RolloutBuffer(BaseBuffer):
         self.returns = self.advantages + self.values
 
     def add(
-        self, obs: np.ndarray, action: np.ndarray, reward: np.ndarray, done: np.ndarray, value: th.Tensor, log_prob: th.Tensor
+        self,
+        obs: np.ndarray,
+        action: np.ndarray,
+        reward: np.ndarray,
+        done: np.ndarray,
+        value: th.Tensor,
+        log_prob: th.Tensor,
+        action_masks: np.ndarray = None,
     ) -> None:
         """
         :param obs: Observation
@@ -353,6 +362,7 @@ class RolloutBuffer(BaseBuffer):
             following the current policy.
         :param log_prob: log probability of the action
             following the current policy.
+        :param action_masks: Masks applied to constrain the choice of possible actions.
         """
         if len(log_prob.shape) == 0:
             # Reshape 0-d tensor to avoid error
@@ -364,6 +374,8 @@ class RolloutBuffer(BaseBuffer):
         self.dones[self.pos] = np.array(done).copy()
         self.values[self.pos] = value.clone().cpu().numpy().flatten()
         self.log_probs[self.pos] = log_prob.clone().cpu().numpy()
+        if action_masks is not None:
+            self.action_masks[self.pos] = np.array(action_masks).copy()
         self.pos += 1
         if self.pos == self.buffer_size:
             self.full = True
@@ -373,7 +385,7 @@ class RolloutBuffer(BaseBuffer):
         indices = np.random.permutation(self.buffer_size * self.n_envs)
         # Prepare the data
         if not self.generator_ready:
-            for tensor in ["observations", "actions", "values", "log_probs", "advantages", "returns"]:
+            for tensor in ["observations", "actions", "action_masks", "values", "log_probs", "advantages", "returns"]:
                 self.__dict__[tensor] = self.swap_and_flatten(self.__dict__[tensor])
             self.generator_ready = True
 
@@ -390,6 +402,7 @@ class RolloutBuffer(BaseBuffer):
         data = (
             self.observations[batch_inds],
             self.actions[batch_inds],
+            self.action_masks[batch_inds].flatten(),
             self.values[batch_inds].flatten(),
             self.log_probs[batch_inds].flatten(),
             self.advantages[batch_inds].flatten(),
