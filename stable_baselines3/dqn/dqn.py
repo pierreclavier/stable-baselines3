@@ -5,13 +5,15 @@ import numpy as np
 import torch as th
 from torch.nn import functional as F
 
+from gym import Env, spaces
+
 from stable_baselines3.common import logger
 from stable_baselines3.common.off_policy_algorithm import OffPolicyAlgorithm
 from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, Schedule
 from stable_baselines3.common.utils import get_linear_fn, is_vectorized_observation, polyak_update
 from stable_baselines3.dqn.policies import DQNPolicy
 
-
+print("hola_DNQ")
 class DQN(OffPolicyAlgorithm):
     """
     Deep Q-Network (DQN)
@@ -157,8 +159,11 @@ class DQN(OffPolicyAlgorithm):
             with th.no_grad():
                 # Compute the next Q-values using the target network
                 next_q_values = self.q_net_target(replay_data.next_observations)
+                print("next_q_values",next_q_values[0,:])
                 # Follow greedy policy: use the one with the highest value
                 next_q_values, _ = next_q_values.max(dim=1)
+                print("next_q_values_max",next_q_values[0])
+                print(env.current_state)
                 # Avoid potential broadcast issue
                 next_q_values = next_q_values.reshape(-1, 1)
                 # 1-step TD target
@@ -193,6 +198,7 @@ class DQN(OffPolicyAlgorithm):
         state: Optional[np.ndarray] = None,
         mask: Optional[np.ndarray] = None,
         deterministic: bool = False,
+        action_masks: Optional[np.ndarray] =None
     ) -> Tuple[np.ndarray, Optional[np.ndarray]]:
         """
         Overrides the base_class predict function to include epsilon-greedy exploration.
@@ -211,7 +217,7 @@ class DQN(OffPolicyAlgorithm):
             else:
                 action = np.array(self.action_space.sample())
         else:
-            action, state = self.policy.predict(observation, state, mask, deterministic)
+            action, state = self.policy.predict(observation, state, mask, deterministic,action_masks=action_masks)
         return action, state
 
     def learn(

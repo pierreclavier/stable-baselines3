@@ -292,8 +292,11 @@ class BasePolicy(BaseModel):
         observation = observation.reshape((-1,) + self.observation_space.shape)
 
         observation = th.as_tensor(observation).to(self.device)
+
         with th.no_grad():
-            actions = self._predict(observation, deterministic=deterministic, action_masks=action_masks)
+            #action_masks = None
+            #print(observation,deterministic,action_masks)
+            actions = self._predict(observation, deterministic, action_masks)
         # Convert to numpy
         actions = actions.cpu().numpy()
 

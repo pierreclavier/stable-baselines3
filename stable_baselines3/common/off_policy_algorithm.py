@@ -2,7 +2,7 @@ import io
 import pathlib
 import time
 import warnings
-from typing import Any, Dict, Optional, Tuple, Type, Union
+from typing import Any, Dict, Optional, Tuple, Type, Union, Callable
 
 import gym
 import numpy as np
@@ -17,7 +17,10 @@ from stable_baselines3.common.policies import BasePolicy
 from stable_baselines3.common.save_util import load_from_pkl, save_to_pkl
 from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, RolloutReturn, Schedule
 from stable_baselines3.common.utils import safe_mean
-from stable_baselines3.common.vec_env import VecEnv
+from stable_baselines3.common.vec_env import VecEnv ,is_vecenv_wrapped
+from stable_baselines3.common.vec_env.wrappers import VecActionMasker
+
+
 
 
 class OffPolicyAlgorithm(BaseAlgorithm):
@@ -102,6 +105,7 @@ class OffPolicyAlgorithm(BaseAlgorithm):
         sde_support: bool = True,
         remove_time_limit_termination: bool = False,
         supported_action_spaces: Optional[Tuple[gym.spaces.Space, ...]] = None,
+        action_mask_fn: Union[str, Callable[[gym.Env], np.ndarray]] = None,
     ):
 
         super(OffPolicyAlgorithm, self).__init__(
@@ -120,6 +124,7 @@ class OffPolicyAlgorithm(BaseAlgorithm):
             use_sde=use_sde,
             sde_sample_freq=sde_sample_freq,
             supported_action_spaces=supported_action_spaces,
+            action_mask_fn=action_mask_fn,
         )
         self.buffer_size = buffer_size
         self.batch_size = batch_size
@@ -307,7 +312,13 @@ class OffPolicyAlgorithm(BaseAlgorithm):
             # Note: when using continuous actions,
             # we assume that the policy uses tanh to scale the action
             # We use non-deterministic action in the case of SAC, for TD3, it does not matter
-            unscaled_action, _ = self.predict(self._last_obs, deterministic=False)
+
+            action_masks = None
+            #if is_vecenv_wrapped(self.env, VecActionMasker):
+            #        action_masks = self.env.valid_actions()
+
+
+            unscaled_action, _ = self.predict(self._last_obs, deterministic=False,action_masks=action_masks)
 
         # Rescale the action from [low, high] to [-1, 1]
         if isinstance(self.action_space, gym.spaces.Box):
@@ -385,6 +396,7 @@ class OffPolicyAlgorithm(BaseAlgorithm):
         """
         episode_rewards, total_timesteps = [], []
         total_steps, total_episodes = 0, 0
+
 
         assert isinstance(env, VecEnv), "You must pass a VecEnv"
         assert env.num_envs == 1, "OffPolicyAlgorithm only support single environment"

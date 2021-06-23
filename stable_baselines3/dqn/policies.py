@@ -8,7 +8,7 @@ from stable_baselines3.common.policies import BasePolicy, register_policy
 from stable_baselines3.common.torch_layers import BaseFeaturesExtractor, FlattenExtractor, NatureCNN, create_mlp
 from stable_baselines3.common.type_aliases import Schedule
 
-
+import numpy as np
 class QNetwork(BasePolicy):
     """
     Action-Value (Q-Value) network for DQN
@@ -165,7 +165,7 @@ class DQNPolicy(BasePolicy):
     def forward(self, obs: th.Tensor, deterministic: bool = True) -> th.Tensor:
         return self._predict(obs, deterministic=deterministic)
 
-    def _predict(self, obs: th.Tensor, deterministic: bool = True) -> th.Tensor:
+    def _predict(self, obs: th.Tensor, deterministic: bool = True, action_masks: np.ndarray=None) -> th.Tensor:
         return self.q_net._predict(obs, deterministic=deterministic)
 
     def _get_data(self) -> Dict[str, Any]:

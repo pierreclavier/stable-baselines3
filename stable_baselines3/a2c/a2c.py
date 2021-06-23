@@ -1,8 +1,9 @@
-from typing import Any, Dict, Optional, Type, Union
+from typing import Any, Dict, Optional, Type, Union, Callable
 
 import torch as th
-from gym import spaces
+from gym import spaces, Env
 from torch.nn import functional as F
+import numpy as np
 
 from stable_baselines3.common import logger
 from stable_baselines3.common.on_policy_algorithm import OnPolicyAlgorithm
@@ -10,7 +11,7 @@ from stable_baselines3.common.policies import ActorCriticPolicy
 from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, Schedule
 from stable_baselines3.common.utils import explained_variance
 
-
+print("hola_A2C")
 class A2C(OnPolicyAlgorithm):
     """
     Advantage Actor Critic (A2C)
@@ -75,6 +76,7 @@ class A2C(OnPolicyAlgorithm):
         seed: Optional[int] = None,
         device: Union[th.device, str] = "auto",
         _init_setup_model: bool = True,
+        action_mask_fn: Union[str, Callable[[Env], np.ndarray]] = None,
     ):
 
         super(A2C, self).__init__(
@@ -102,6 +104,7 @@ class A2C(OnPolicyAlgorithm):
                 spaces.MultiDiscrete,
                 spaces.MultiBinary,
             ),
+            action_mask_fn=action_mask_fn,
         )
 
         self.normalize_advantage = normalize_advantage
@@ -132,7 +135,9 @@ class A2C(OnPolicyAlgorithm):
                 actions = actions.long().flatten()
 
             # TODO: avoid second computation of everything because of the gradient
-            values, log_prob, entropy = self.policy.evaluate_actions(rollout_data.observations, actions)
+            values, log_prob, entropy = self.policy.evaluate_actions(
+                rollout_data.observations, actions, rollout_data.action_masks
+            )
             values = values.flatten()
 
             # Normalize advantage (not present in the original implementation)
