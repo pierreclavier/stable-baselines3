@@ -102,6 +102,7 @@ class BaseAlgorithm(ABC):
         sde_sample_freq: int = -1,
         supported_action_spaces: Optional[Tuple[gym.spaces.Space, ...]] = None,
         action_mask_fn: Union[str, Callable[[gym.Env], np.ndarray]] = None,
+        all_masks : Callable =None
     ):
 
         if isinstance(policy, str) and policy_base is not None:

@@ -3,25 +3,25 @@ from typing import Any, Dict, List, Optional, Tuple, Type, Union, Callable
 import gym
 import numpy as np
 import torch as th
-from torch.nn import functional as F
-
-from gym import Env, spaces
-
-from stable_baselines3.common import logger
+from stable_baselines3.common.buffers import ReplayBuffer
 from stable_baselines3.common.off_policy_algorithm import OffPolicyAlgorithm
+from stable_baselines3.common.preprocessing import maybe_transpose
 from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, Schedule
 from stable_baselines3.common.utils import get_linear_fn, is_vectorized_observation, polyak_update
-from stable_baselines3.dqn.policies import DQNPolicy
-from stable_baselines3.common.vec_env.wrappers import VecActionMasker
-from stable_baselines3.common.vec_env import VecEnv, is_vecenv_wrapped
-print("hola_DNQ")
-class DQN(OffPolicyAlgorithm):
-    """
-    Deep Q-Network (DQN)
 
-    Paper: https://arxiv.org/abs/1312.5602, https://www.nature.com/articles/nature14236
-    Default hyperparameters are taken from the nature paper,
-    except for the optimizer and learning rate that were taken from Stable Baselines defaults.
+from sb3_contrib.common.utils import quantile_huber_loss
+from sb3_contrib.qrdqn.policies import QRDQNPolicy
+
+from stable_baselines3.common import logger
+from stable_baselines3.common.vec_env import VecEnv, is_vecenv_wrapped
+from stable_baselines3.common.vec_env.wrappers import VecActionMasker
+from gym import Env, spaces
+print("hello_qrdqn")
+class QRDQN(OffPolicyAlgorithm):
+    """
+    Quantile Regression Deep Q-Network (QR-DQN)
+    Paper: https://arxiv.org/abs/1710.10044
+    Default hyperparameters are taken from the paper and are tuned for Atari games.
 
     :param policy: The policy model to use (MlpPolicy, CnnPolicy, ...)
     :param env: The environment to learn from (if registered in Gym, can be str)
@@ -32,13 +32,15 @@ class DQN(OffPolicyAlgorithm):
     :param batch_size: Minibatch size for each gradient update
     :param tau: the soft update coefficient ("Polyak update", between 0 and 1) default 1 for hard update
     :param gamma: the discount factor
-    :param train_freq: Update the model every ``train_freq`` steps. Set to `-1` to disable.
+    :param train_freq: Update the model every ``train_freq`` steps. Alternatively pass a tuple of frequency and unit
+        like ``(5, "step")`` or ``(2, "episode")``.
     :param gradient_steps: How many gradient steps to do after each rollout
         (see ``train_freq`` and ``n_episodes_rollout``)
         Set to ``-1`` means to do as many gradient steps as steps done in the environment
         during the rollout.
-    :param n_episodes_rollout: Update the model every ``n_episodes_rollout`` episodes.
-        Note that this cannot be used at the same time as ``train_freq``. Set to `-1` to disable.
+    :param replay_buffer_class: Replay buffer class to use (for instance ``HerReplayBuffer``).
+        If ``None``, it will be automatically selected.
+    :param replay_buffer_kwargs: Keyword arguments to pass to the replay buffer on creation.
     :param optimize_memory_usage: Enable a memory efficient variant of the replay buffer
         at a cost of more complexity.
         See https://github.com/DLR-RM/stable-baselines3/issues/37#issuecomment-637501195
@@ -47,7 +49,7 @@ class DQN(OffPolicyAlgorithm):
     :param exploration_fraction: fraction of entire training period over which the exploration rate is reduced
     :param exploration_initial_eps: initial value of random action probability
     :param exploration_final_eps: final value of random action probability
-    :param max_grad_norm: The maximum value for the gradient clipping
+    :param max_grad_norm: The maximum value for the gradient clipping (if None, no clipping)
     :param tensorboard_log: the log location for tensorboard (if None, no logging)
     :param create_eval_env: Whether to create a second environment that will be
         used for evaluating the agent periodically. (Only available when passing string for the environment)
@@ -61,23 +63,24 @@ class DQN(OffPolicyAlgorithm):
 
     def __init__(
         self,
-        policy: Union[str, Type[DQNPolicy]],
+        policy: Union[str, Type[QRDQNPolicy]],
         env: Union[GymEnv, str],
-        learning_rate: Union[float, Schedule] = 1e-4,
-        buffer_size: int = 1000000,
+        learning_rate: Union[float, Schedule] = 5e-5,
+        buffer_size: int = 1000000,  # 1e6
         learning_starts: int = 50000,
         batch_size: Optional[int] = 32,
         tau: float = 1.0,
         gamma: float = 0.99,
         train_freq: int = 4,
         gradient_steps: int = 1,
-        n_episodes_rollout: int = -1,
+        replay_buffer_class: Optional[ReplayBuffer] = None,
+        replay_buffer_kwargs: Optional[Dict[str, Any]] = None,
         optimize_memory_usage: bool = False,
         target_update_interval: int = 10000,
-        exploration_fraction: float = 0.1,
+        exploration_fraction: float = 0.005,
         exploration_initial_eps: float = 1.0,
-        exploration_final_eps: float = 0.05,
-        max_grad_norm: float = 10,
+        exploration_final_eps: float = 0.01,
+        max_grad_norm: Optional[float] = None,
         tensorboard_log: Optional[str] = None,
         create_eval_env: bool = False,
         policy_kwargs: Optional[Dict[str, Any]] = None,
@@ -87,12 +90,13 @@ class DQN(OffPolicyAlgorithm):
         _init_setup_model: bool = True,
         action_mask_fn: Union[str, Callable[[Env], np.ndarray]] = None,
         all_masks : Callable =None,
+        #var_penal :bool =False,
     ):
 
-        super(DQN, self).__init__(
+        super(QRDQN, self).__init__(
             policy,
             env,
-            DQNPolicy,
+            QRDQNPolicy,
             learning_rate,
             buffer_size,
             learning_starts,
@@ -101,8 +105,9 @@ class DQN(OffPolicyAlgorithm):
             gamma,
             train_freq,
             gradient_steps,
-            n_episodes_rollout,
             action_noise=None,  # No action noise
+            replay_buffer_class=replay_buffer_class,
+            replay_buffer_kwargs=replay_buffer_kwargs,
             policy_kwargs=policy_kwargs,
             tensorboard_log=tensorboard_log,
             verbose=verbose,
@@ -114,6 +119,7 @@ class DQN(OffPolicyAlgorithm):
             supported_action_spaces=(gym.spaces.Discrete,),
             action_mask_fn=action_mask_fn,
             all_masks=all_masks,
+
         )
 
         self.exploration_initial_eps = exploration_initial_eps
@@ -125,22 +131,30 @@ class DQN(OffPolicyAlgorithm):
         self.exploration_rate = 0.0
         # Linear schedule will be defined in `_setup_model()`
         self.exploration_schedule = None
-        self.q_net, self.q_net_target = None, None
+        self.quantile_net, self.quantile_net_target = None, None
         self.all_masks=all_masks()
+        self.var_penal=True
+        self.gamma=gamma
+
+        if "optimizer_class" not in self.policy_kwargs:
+            self.policy_kwargs["optimizer_class"] = th.optim.Adam
+            # Proposed in the QR-DQN paper where `batch_size = 32`
+            self.policy_kwargs["optimizer_kwargs"] = dict(eps=0.01 / batch_size)
 
         if _init_setup_model:
             self._setup_model()
 
     def _setup_model(self) -> None:
-        super(DQN, self)._setup_model()
+        super(QRDQN, self)._setup_model()
         self._create_aliases()
         self.exploration_schedule = get_linear_fn(
             self.exploration_initial_eps, self.exploration_final_eps, self.exploration_fraction
         )
 
     def _create_aliases(self) -> None:
-        self.q_net = self.policy.q_net
-        self.q_net_target = self.policy.q_net_target
+        self.quantile_net = self.policy.quantile_net
+        self.quantile_net_target = self.policy.quantile_net_target
+        self.n_quantiles = self.policy.n_quantiles
 
     def _on_step(self) -> None:
         """
@@ -148,84 +162,78 @@ class DQN(OffPolicyAlgorithm):
         This method is called in ``collect_rollouts()`` after each step in the environment.
         """
         if self.num_timesteps % self.target_update_interval == 0:
-            polyak_update(self.q_net.parameters(), self.q_net_target.parameters(), self.tau)
+            polyak_update(self.quantile_net.parameters(), self.quantile_net_target.parameters(), self.tau)
 
         self.exploration_rate = self.exploration_schedule(self._current_progress_remaining)
+        #self.logger.record("rollout/exploration rate", self.exploration_rate)
         logger.record("rollout/exploration rate", self.exploration_rate)
 
     def train(self, gradient_steps: int, batch_size: int = 100) -> None:
         # Update learning rate according to schedule
         self._update_learning_rate(self.policy.optimizer)
 
-
-
         losses = []
-        for gradient_step in range(gradient_steps):
+        for _ in range(gradient_steps):
             # Sample replay buffer
+
+            #a modifer pour sampler les bonnes trajectoires
             replay_data = self.replay_buffer.sample(batch_size, env=self._vec_normalize_env)
 
+            if is_vecenv_wrapped(self.env, VecActionMasker):
+                action_mask=np.array([self.all_masks[replay_data.next_observations[k]] for k in range(len(replay_data.next_observations))])
+                action_mask=action_mask.reshape(action_mask.shape[0],1,action_mask.shape[1])
+
+
             with th.no_grad():
+                #print(replay_data.next_observations)
+                # Compute the quantiles of next observation
+                next_quantiles = self.quantile_net_target(replay_data.next_observations)
+                #print("next_quantiles",next_quantiles.shape,next_quantiles[0,:,30])
+                # Compute the greedy actions which maximize the next Q values size batch*nb_quantiles*nb_action
 
-                if is_vecenv_wrapped(self.env, VecActionMasker):
-                    #print('replay_data',replay_data)
-                    #print('all_masks',self.all_masks)
+                if self.var_penal==True:
+                    next_greedy_actions= next_quantiles.mean(dim=1, keepdim=True) - self.gamma*next_quantiles.var(dim=1, keepdim=True)
+                else :
+                    next_greedy_actions = next_quantiles.mean(dim=1, keepdim=True)
 
+                next_greedy_actions[np.logical_not(action_mask)]=-1000
 
-                    action_mask=np.array([self.all_masks[replay_data.next_observations[k]] for k in range(len(replay_data.next_observations))])
-
-                    #action_masks = self.env.valid_action_mask(self,many_states=replay_data)
-                    #print(replay_data.observations.shape, np.array(action_mask))
-
-
-                #print( "newt_observatoin",replay_data.next_observations.shape,replay_data.next_observations)
-                # Compute the next Q-values using the target network
-                next_q_values = self.q_net_target(replay_data.next_observations)
-                #print("next_q_values",next_q_values.shape)#next_q_values[0,:]
-
-                #print("dim",next_q_values,action_mask.shape)
-
-                next_q_values[np.logical_not(action_mask)]=-1000
-
-                #print("q_masked",next_q_values)
+                #print("next_greedy_quantiles",next_greedy_actions)
+                next_greedy_actions =next_greedy_actions.argmax(dim=2, keepdim=True)
 
 
-
-
-                # Follow greedy policy: use the one with the highest value
-                next_q_values, _ = next_q_values.max(dim=1)
-
-                #print(next_q_values)
-                #print("next_q_values_max",next_q_values[0])
-                #print(env.current_state)
-                # Avoid potential broadcast issue
-                next_q_values = next_q_values.reshape(-1, 1)
+                # Make "n_quantiles" copies of actions, and reshape to (batch_size, n_quantiles, 1)
+                next_greedy_actions = next_greedy_actions.expand(batch_size, self.n_quantiles, 1)
+                # Follow greedy policy: use the one with the highest Q values
+                next_quantiles = next_quantiles.gather(dim=2, index=next_greedy_actions).squeeze(dim=2)
                 # 1-step TD target
-                target_q_values = replay_data.rewards + (1 - replay_data.dones) * self.gamma * next_q_values
-                #print('target',target_q_values.shape)
+                target_quantiles = replay_data.rewards + (1 - replay_data.dones) * self.gamma * next_quantiles
 
-            # Get current Q-values estimates
-            current_q_values = self.q_net(replay_data.observations)
-            #print('current_before',current_q_values.shape)
+            # Get current quantile estimates
+            current_quantiles = self.quantile_net(replay_data.observations)
 
-            # Retrieve the q-values for the actions from the replay buffer
-            current_q_values = th.gather(current_q_values, dim=1, index=replay_data.actions.long())
-            #print('current_after',current_q_values.shape)
-            #print(caca)
+            # Make "n_quantiles" copies of actions, and reshape to (batch_size, n_quantiles, 1).
+            actions = replay_data.actions[..., None].long().expand(batch_size, self.n_quantiles, 1)
+            # Retrieve the quantiles for the actions from the replay buffer
+            current_quantiles = th.gather(current_quantiles, dim=2, index=actions).squeeze(dim=2)
 
-
-            # Compute Huber loss (less sensitive to outliers)
-            loss = F.smooth_l1_loss(current_q_values, target_q_values)
+            # Compute Quantile Huber loss, summing over a quantile dimension as in the paper.
+            loss = quantile_huber_loss(current_quantiles, target_quantiles, sum_over_quantiles=True)
             losses.append(loss.item())
 
             # Optimize the policy
             self.policy.optimizer.zero_grad()
             loss.backward()
             # Clip gradient norm
-            th.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
+            if self.max_grad_norm is not None:
+                th.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
             self.policy.optimizer.step()
 
         # Increase update counter
         self._n_updates += gradient_steps
+
+        #self.logger.record("train/n_updates", self._n_updates, exclude="tensorboard")
+        #self.logger.record("train/loss", np.mean(losses))
 
         logger.record("train/n_updates", self._n_updates, exclude="tensorboard")
         logger.record("train/loss", np.mean(losses))
@@ -249,24 +257,21 @@ class DQN(OffPolicyAlgorithm):
             (used in recurrent policies)
         """
         if not deterministic and np.random.rand() < self.exploration_rate:
-            if is_vectorized_observation(observation, self.observation_space):
-                n_batch = observation.shape[0]
+            if is_vectorized_observation(maybe_transpose(observation, self.observation_space), self.observation_space):
+                if isinstance(self.observation_space, gym.spaces.Dict):
+                    n_batch = observation[list(observation.keys())[0]].shape[0]
+                else:
+                    n_batch = observation.shape[0]
 
                 if is_vecenv_wrapped(self.env, VecActionMasker):
 
                         action_masks = np.array(self.env.valid_actions())
                         action_masks=action_masks.reshape(action_masks.shape[1],)
-                        #print(action_masks)
-
                         prop=np.array(self.env.valid_actions()).reshape(-1,)
-                        #print("len action masks",len(action_masks))
-
                         action=np.array([np.random.choice(len(prop), 1,p= prop/prop.sum())   for _ in range(n_batch)  ]).reshape(1)
-                        #print('batch-action',action.shape)
                 else :
                     action = np.array([self.action_space.sample() for _ in range(n_batch)])
-
-            else:
+            else: # pas vectorisé
                 if is_vecenv_wrapped(self.env, VecActionMasker):
 
                         action_masks = np.array(self.env.valid_actions())
@@ -286,12 +291,12 @@ class DQN(OffPolicyAlgorithm):
         eval_env: Optional[GymEnv] = None,
         eval_freq: int = -1,
         n_eval_episodes: int = 5,
-        tb_log_name: str = "DQN",
+        tb_log_name: str = "QRDQN",
         eval_log_path: Optional[str] = None,
         reset_num_timesteps: bool = True,
     ) -> OffPolicyAlgorithm:
 
-        return super(DQN, self).learn(
+        return super(QRDQN, self).learn(
             total_timesteps=total_timesteps,
             callback=callback,
             log_interval=log_interval,
@@ -304,7 +309,7 @@ class DQN(OffPolicyAlgorithm):
         )
 
     def _excluded_save_params(self) -> List[str]:
-        return super(DQN, self)._excluded_save_params() + ["q_net", "q_net_target"]
+        return super(QRDQN, self)._excluded_save_params() + ["quantile_net", "quantile_net_target"]
 
     def _get_torch_save_params(self) -> Tuple[List[str], List[str]]:
         state_dicts = ["policy", "policy.optimizer"]

@@ -8,6 +8,8 @@ import gym
 import numpy as np
 import torch as th
 
+from gym import Env, spaces
+
 from stable_baselines3.common import logger
 from stable_baselines3.common.base_class import BaseAlgorithm
 from stable_baselines3.common.buffers import ReplayBuffer
@@ -88,6 +90,8 @@ class OffPolicyAlgorithm(BaseAlgorithm):
         gamma: float = 0.99,
         train_freq: int = 1,
         gradient_steps: int = 1,
+        replay_buffer_class: Optional[ReplayBuffer] = None,
+        replay_buffer_kwargs: Optional[Dict[str, Any]] = None,
         n_episodes_rollout: int = -1,
         action_noise: Optional[ActionNoise] = None,
         optimize_memory_usage: bool = False,
@@ -106,6 +110,7 @@ class OffPolicyAlgorithm(BaseAlgorithm):
         remove_time_limit_termination: bool = False,
         supported_action_spaces: Optional[Tuple[gym.spaces.Space, ...]] = None,
         action_mask_fn: Union[str, Callable[[gym.Env], np.ndarray]] = None,
+        all_masks : Callable =None,
     ):
 
         super(OffPolicyAlgorithm, self).__init__(
@@ -125,12 +130,17 @@ class OffPolicyAlgorithm(BaseAlgorithm):
             sde_sample_freq=sde_sample_freq,
             supported_action_spaces=supported_action_spaces,
             action_mask_fn=action_mask_fn,
+            all_masks=all_masks
         )
         self.buffer_size = buffer_size
         self.batch_size = batch_size
         self.learning_starts = learning_starts
         self.tau = tau
         self.gamma = gamma
+        self.replay_buffer_class = replay_buffer_class
+        if replay_buffer_kwargs is None:
+            replay_buffer_kwargs = {}
+        self.replay_buffer_kwargs = replay_buffer_kwargs
         self.train_freq = train_freq
         self.gradient_steps = gradient_steps
         self.n_episodes_rollout = n_episodes_rollout
@@ -305,19 +315,34 @@ class OffPolicyAlgorithm(BaseAlgorithm):
             The two differs when the action space is not normalized (bounds are not [-1, 1]).
         """
         # Select action randomly or according to policy
+
         if self.num_timesteps < learning_starts and not (self.use_sde and self.use_sde_at_warmup):
+
+            if is_vecenv_wrapped(self.env, VecActionMasker):
+
+                    action_masks = np.array(self.env.valid_actions())
+                    #print(action_masks.shape)
+                    action_masks=action_masks.reshape(action_masks.shape[1],)
+                    #print(action_masks,action_masks.sum(),action_masks.shape)
+
+                    unscaled_action=np.random.choice(len(action_masks), 1,p= action_masks/action_masks.sum())
+                    #print(unscaled_action,unscaled_action.dtype)
             # Warmup phase
-            unscaled_action = np.array([self.action_space.sample()])
+            else :
+                unscaled_action = np.array([self.action_space.sample()])
         else:
             # Note: when using continuous actions,
             # we assume that the policy uses tanh to scale the action
             # We use non-deterministic action in the case of SAC, for TD3, it does not matter
 
             action_masks = None
-            #if is_vecenv_wrapped(self.env, VecActionMasker):
-            #        action_masks = self.env.valid_actions()
+            if is_vecenv_wrapped(self.env, VecActionMasker):
+                    action_masks = np.array(self.env.valid_actions())
+                    action_masks=action_masks.reshape(action_masks.shape[1],)
+                    #print(action_masks)
 
 
+            #print("holla1")
             unscaled_action, _ = self.predict(self._last_obs, deterministic=False,action_masks=action_masks)
 
         # Rescale the action from [low, high] to [-1, 1]
@@ -416,6 +441,7 @@ class OffPolicyAlgorithm(BaseAlgorithm):
                 if self.use_sde and self.sde_sample_freq > 0 and total_steps % self.sde_sample_freq == 0:
                     # Sample a new noise matrix
                     self.actor.reset_noise()
+                #print("coucou2")
 
                 # Select action randomly or according to policy
                 action, buffer_action = self._sample_action(learning_starts, action_noise)

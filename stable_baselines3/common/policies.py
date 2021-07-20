@@ -59,6 +59,7 @@ class BaseModel(nn.Module, ABC):
         normalize_images: bool = True,
         optimizer_class: Type[th.optim.Optimizer] = th.optim.Adam,
         optimizer_kwargs: Optional[Dict[str, Any]] = None,
+        #var_penal: bool=False
     ):
         super(BaseModel, self).__init__()
 
@@ -296,7 +297,9 @@ class BasePolicy(BaseModel):
         with th.no_grad():
             #action_masks = None
             #print(observation,deterministic,action_masks)
-            actions = self._predict(observation, deterministic, action_masks)
+            #print("holla2")
+            actions = self._predict(observation, deterministic, action_masks=action_masks)
+            #print('action_predict',actions.shape)
         # Convert to numpy
         actions = actions.cpu().numpy()
 
