@@ -230,7 +230,8 @@ class BasePolicy(BaseModel):
         self,
         observation: th.Tensor,
         deterministic: bool = False,
-        action_masks: np.ndarray = None
+        action_masks: np.ndarray = None,
+        var_penal :bool =None
     ) -> th.Tensor:
         """
         Get the action according to the policy for a given observation.
@@ -250,7 +251,10 @@ class BasePolicy(BaseModel):
         state: Optional[np.ndarray] = None,
         mask: Optional[np.ndarray] = None,
         deterministic: bool = False,
-        action_masks: np.ndarray = None
+        action_masks: np.ndarray = None,
+        var_penal : bool  = False,
+        gamma :float = 0.99
+        #var_penal : bool =False
     ) -> Tuple[np.ndarray, Optional[np.ndarray]]:
         """
         Get the policy action and state from an observation (and optional state).
@@ -298,7 +302,8 @@ class BasePolicy(BaseModel):
             #action_masks = None
             #print(observation,deterministic,action_masks)
             #print("holla2")
-            actions = self._predict(observation, deterministic, action_masks=action_masks)
+            #print('3',var_penal) #self.var_penal)
+            actions = self._predict(observation, deterministic, action_masks=action_masks,var_penal=var_penal,gamma=gamma)
             #print('action_predict',actions.shape)
         # Convert to numpy
         actions = actions.cpu().numpy()
@@ -624,7 +629,8 @@ class ActorCriticPolicy(BasePolicy):
         self,
         observation: th.Tensor,
         deterministic: bool = False,
-        action_masks: np.ndarray = None
+        action_masks: np.ndarray = None,
+        var_penal :bool = False
     ) -> th.Tensor:
         """
         Get the action according to the policy for a given observation.

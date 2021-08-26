@@ -278,6 +278,11 @@ def safe_mean(arr: Union[np.ndarray, list, deque]) -> np.ndarray:
     return np.nan if len(arr) == 0 else np.mean(arr)
 
 
+def safe_var(arr : Union[np.ndarray,list, deque]) -> np.ndarray:
+
+    return np.nan if len(arr)==0 else np.var(arr)
+
+
 def zip_strict(*iterables: Iterable) -> Iterable:
     r"""
     ``zip()`` function but enforces that iterables are of equal length.

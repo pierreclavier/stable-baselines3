@@ -16,6 +16,12 @@ from stable_baselines3.common import logger
 from stable_baselines3.common.vec_env import VecEnv, is_vecenv_wrapped
 from stable_baselines3.common.vec_env.wrappers import VecActionMasker
 from gym import Env, spaces
+
+import seaborn as sns
+from matplotlib import pyplot as plt
+sns.set()
+
+
 print("hello_qrdqn")
 class QRDQN(OffPolicyAlgorithm):
     """
@@ -90,7 +96,7 @@ class QRDQN(OffPolicyAlgorithm):
         _init_setup_model: bool = True,
         action_mask_fn: Union[str, Callable[[Env], np.ndarray]] = None,
         all_masks : Callable =None,
-        #var_penal :bool =False,
+        var_penal :bool =False,
     ):
 
         super(QRDQN, self).__init__(
@@ -119,6 +125,8 @@ class QRDQN(OffPolicyAlgorithm):
             supported_action_spaces=(gym.spaces.Discrete,),
             action_mask_fn=action_mask_fn,
             all_masks=all_masks,
+            #var_penal=var_penal,
+
 
         )
 
@@ -133,8 +141,11 @@ class QRDQN(OffPolicyAlgorithm):
         self.exploration_schedule = None
         self.quantile_net, self.quantile_net_target = None, None
         self.all_masks=all_masks()
-        self.var_penal=True
+
+        self.var_penal=var_penal
+        #print('init va penal',self.var_penal)
         self.gamma=gamma
+
 
         if "optimizer_class" not in self.policy_kwargs:
             self.policy_kwargs["optimizer_class"] = th.optim.Adam
@@ -168,6 +179,113 @@ class QRDQN(OffPolicyAlgorithm):
         #self.logger.record("rollout/exploration rate", self.exploration_rate)
         logger.record("rollout/exploration rate", self.exploration_rate)
 
+    def plot_graph(self):
+
+        #print(self.all_masks.shape)
+        states=th.tensor(np.arange(self.all_masks.shape[0],dtype='int'),dtype=th.int).reshape(-1,1)
+        #print(state)
+
+        next_quantiles=self.quantile_net_target(states)
+
+
+
+        for state in states:#[0:24]: ### a modifier
+            #print(state)
+            print(state)
+
+            nb_graphs=self.all_masks[state,:].sum()
+
+
+            fig, axes = plt.subplots(1, np.int(nb_graphs)  , figsize=(15, 5), sharey=True)
+            fig.suptitle('Distribution of returns for state {}'.format(state[0]))
+
+
+
+            for count,action in enumerate( self.all_masks[state,:].nonzero()[0].astype(np.int)  ):
+                #print(action)
+                points=next_quantiles[np.int(state),:,action].detach().numpy()
+                var=points.var()
+                #print(var)
+                #var=float(round(var,3))
+                np.savetxt("Points/state_{}_action_{}_varpenal{}_gamma{}.csv".format(state,action,self.var_penal,self.gamma), points, delimiter=",")
+
+                if nb_graphs>1:
+                    sns.distplot(points, hist = True, rug = True,  kde=True,
+                    color = 'darkblue',
+                    kde_kws={'linewidth': 3},
+                    rug_kws={'color': 'black'} ,ax=axes[count])
+                    #fig.add_subplot(1,np.int(nb_graphs),count+1)
+                    # sns.displot(points,kind='kde')
+
+                    #sns.kdeplot(points,ax=axes[count])
+
+                    axes[count].set_title("action {0}, var {1:.4f}".format(action,var))
+                else :
+                    # fig.add_subplot(1,np.int(nb_graphs),count+1)
+                    # sns.displot(points,kind='kde')
+                    #sns.kdeplot(points)
+                    sns.distplot(points, hist = True,  rug = True,  kde=True,
+                    color = 'darkblue',
+                    kde_kws={'linewidth': 3},
+                    rug_kws={'color': 'black'})
+
+            plt.legend()
+            #plt.show()
+
+            plt.savefig("Fig/test10/state{}_action_{}_var_penal{}_gamma{}.jpeg".format(np.int(state),action,self.var_penal,self.gamma))
+
+
+
+    def plot_graph2(self,state):
+
+        #print(self.all_masks.shape)
+        states=th.tensor(np.arange(self.all_masks.shape[0],dtype='int'),dtype=th.int).reshape(-1,1)
+        #print(state)
+
+        next_quantiles=self.quantile_net_target(states)
+
+        nb_graphs=24
+        state=states[3]
+
+        fig, axes = plt.subplots(1, np.int(nb_graphs)  , figsize=(15, 5), sharey=True)
+        fig.suptitle('Distribution of returns for state {}'.format(np.int(state)))
+
+        for count,action in enumerate( np.arange(24,dtype='int') ):
+            print(action)
+            points=next_quantiles[np.int(state),:,action].detach().numpy()
+            var=points.var()
+
+
+            sns.distplot(points, hist = False, kde = True, rug = True,
+                color = 'darkblue',
+                kde_kws={'linewidth': 3},
+                rug_kws={'color': 'black'} ,ax=axes[count])
+
+            axes[count].set_title("action {}, var {}".format(action,var))
+
+
+        #print("var",distrib_1,distrib_2)
+
+        plt.legend()
+        #plt.show()
+        plt.savefig(' teststate {} action {} distribution .jpeg'.format(state,action))
+
+
+        ############### for Variance
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     def train(self, gradient_steps: int, batch_size: int = 100) -> None:
         # Update learning rate according to schedule
         self._update_learning_rate(self.policy.optimizer)
@@ -188,11 +306,18 @@ class QRDQN(OffPolicyAlgorithm):
                 #print(replay_data.next_observations)
                 # Compute the quantiles of next observation
                 next_quantiles = self.quantile_net_target(replay_data.next_observations)
+
+
+
+                #print(next_quantiles.shape)
                 #print("next_quantiles",next_quantiles.shape,next_quantiles[0,:,30])
                 # Compute the greedy actions which maximize the next Q values size batch*nb_quantiles*nb_action
 
                 if self.var_penal==True:
+                    #print("coucou1")
                     next_greedy_actions= next_quantiles.mean(dim=1, keepdim=True) - self.gamma*next_quantiles.var(dim=1, keepdim=True)
+
+
                 else :
                     next_greedy_actions = next_quantiles.mean(dim=1, keepdim=True)
 
@@ -232,6 +357,12 @@ class QRDQN(OffPolicyAlgorithm):
         # Increase update counter
         self._n_updates += gradient_steps
 
+        #if self.num_timesteps==self.total_timesteps:
+            #self.plot_graph()
+
+
+
+
         #self.logger.record("train/n_updates", self._n_updates, exclude="tensorboard")
         #self.logger.record("train/loss", np.mean(losses))
 
@@ -244,7 +375,9 @@ class QRDQN(OffPolicyAlgorithm):
         state: Optional[np.ndarray] = None,
         mask: Optional[np.ndarray] = None,
         deterministic: bool = False,
-        action_masks: Optional[np.ndarray] =None
+        action_masks: Optional[np.ndarray] =None,
+        var_penal :bool = False,
+        gamma : float = 0.99
     ) -> Tuple[np.ndarray, Optional[np.ndarray]]:
         """
         Overrides the base_class predict function to include epsilon-greedy exploration.
@@ -280,7 +413,13 @@ class QRDQN(OffPolicyAlgorithm):
                 else:
                     action = np.array(self.action_space.sample())
         else:
-            action, state = self.policy.predict(observation, state, mask, deterministic,action_masks=action_masks)
+            #print('2', self.var_penal,var_penal)
+            action, state = self.policy.predict(observation, state, mask, deterministic,action_masks=action_masks,var_penal=var_penal,gamma=gamma)
+
+
+
+
+
         return action, state
 
     def learn(
@@ -294,6 +433,7 @@ class QRDQN(OffPolicyAlgorithm):
         tb_log_name: str = "QRDQN",
         eval_log_path: Optional[str] = None,
         reset_num_timesteps: bool = True,
+        var_penal=False,
     ) -> OffPolicyAlgorithm:
 
         return super(QRDQN, self).learn(
@@ -306,6 +446,7 @@ class QRDQN(OffPolicyAlgorithm):
             tb_log_name=tb_log_name,
             eval_log_path=eval_log_path,
             reset_num_timesteps=reset_num_timesteps,
+            var_penal=var_penal
         )
 
     def _excluded_save_params(self) -> List[str]:

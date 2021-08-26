@@ -18,7 +18,7 @@ from stable_baselines3.common.noise import ActionNoise
 from stable_baselines3.common.policies import BasePolicy
 from stable_baselines3.common.save_util import load_from_pkl, save_to_pkl
 from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, RolloutReturn, Schedule
-from stable_baselines3.common.utils import safe_mean
+from stable_baselines3.common.utils import safe_mean , safe_var
 from stable_baselines3.common.vec_env import VecEnv ,is_vecenv_wrapped
 from stable_baselines3.common.vec_env.wrappers import VecActionMasker
 
@@ -111,6 +111,8 @@ class OffPolicyAlgorithm(BaseAlgorithm):
         supported_action_spaces: Optional[Tuple[gym.spaces.Space, ...]] = None,
         action_mask_fn: Union[str, Callable[[gym.Env], np.ndarray]] = None,
         all_masks : Callable =None,
+        var_penal :bool =False,
+
     ):
 
         super(OffPolicyAlgorithm, self).__init__(
@@ -130,13 +132,16 @@ class OffPolicyAlgorithm(BaseAlgorithm):
             sde_sample_freq=sde_sample_freq,
             supported_action_spaces=supported_action_spaces,
             action_mask_fn=action_mask_fn,
-            all_masks=all_masks
+            all_masks=all_masks,
+            #var_penal=var_penal,
+
         )
         self.buffer_size = buffer_size
         self.batch_size = batch_size
         self.learning_starts = learning_starts
         self.tau = tau
         self.gamma = gamma
+        #self.total_timesteps=total_timesteps
         self.replay_buffer_class = replay_buffer_class
         if replay_buffer_kwargs is None:
             replay_buffer_kwargs = {}
@@ -146,6 +151,8 @@ class OffPolicyAlgorithm(BaseAlgorithm):
         self.n_episodes_rollout = n_episodes_rollout
         self.action_noise = action_noise
         self.optimize_memory_usage = optimize_memory_usage
+        self.var_penal=var_penal
+
 
         # Remove terminations (dones) that are due to time limit
         # see https://github.com/hill-a/stable-baselines/issues/863
@@ -186,6 +193,7 @@ class OffPolicyAlgorithm(BaseAlgorithm):
             **self.policy_kwargs  # pytype:disable=not-instantiable
         )
         self.policy = self.policy.to(self.device)
+
 
     def save_replay_buffer(self, path: Union[str, pathlib.Path, io.BufferedIOBase]) -> None:
         """
@@ -256,6 +264,7 @@ class OffPolicyAlgorithm(BaseAlgorithm):
         tb_log_name: str = "run",
         eval_log_path: Optional[str] = None,
         reset_num_timesteps: bool = True,
+        var_penal : bool=False
     ) -> "OffPolicyAlgorithm":
 
         total_timesteps, callback = self._setup_learn(
@@ -263,7 +272,8 @@ class OffPolicyAlgorithm(BaseAlgorithm):
         )
 
         callback.on_training_start(locals(), globals())
-
+        self.total_timesteps=total_timesteps
+        self.var_penal=var_penal
         while self.num_timesteps < total_timesteps:
 
             rollout = self.collect_rollouts(
@@ -342,8 +352,8 @@ class OffPolicyAlgorithm(BaseAlgorithm):
                     #print(action_masks)
 
 
-            #print("holla1")
-            unscaled_action, _ = self.predict(self._last_obs, deterministic=False,action_masks=action_masks)
+            #print('1,',self.var_penal)
+            unscaled_action, _ = self.predict(self._last_obs, deterministic=False,action_masks=action_masks,var_penal=self.var_penal,gamma=self.gamma)
 
         # Rescale the action from [low, high] to [-1, 1]
         if isinstance(self.action_space, gym.spaces.Box):
@@ -369,8 +379,10 @@ class OffPolicyAlgorithm(BaseAlgorithm):
         fps = int(self.num_timesteps / (time.time() - self.start_time))
         logger.record("time/episodes", self._episode_num, exclude="tensorboard")
         if len(self.ep_info_buffer) > 0 and len(self.ep_info_buffer[0]) > 0:
+
             logger.record("rollout/ep_rew_mean", safe_mean([ep_info["r"] for ep_info in self.ep_info_buffer]))
             logger.record("rollout/ep_len_mean", safe_mean([ep_info["l"] for ep_info in self.ep_info_buffer]))
+            logger.record("rollout/ep_rew_var",  safe_var([ep_info["r"] for ep_info in self.ep_info_buffer]) )    
         logger.record("time/fps", fps)
         logger.record("time/time_elapsed", int(time.time() - self.start_time), exclude="tensorboard")
         logger.record("time/total timesteps", self.num_timesteps, exclude="tensorboard")
@@ -502,7 +514,7 @@ class OffPolicyAlgorithm(BaseAlgorithm):
                     action_noise.reset()
 
                 # Log training infos
-                if log_interval is not None and self._episode_num % log_interval == 0:
+                if log_interval is not None and self._episode_num % log_interval == 0 and self.num_timesteps>self.learning_starts :
                     self._dump_logs()
 
         mean_reward = np.mean(episode_rewards) if total_episodes > 0 else 0.0

@@ -14,6 +14,8 @@ from stable_baselines3.common.type_aliases import Schedule
 from torch import nn
 import numpy as np
 
+from stable_baselines3.common import logger
+
 
 
 class QuantileNetwork(BasePolicy):
@@ -39,14 +41,16 @@ class QuantileNetwork(BasePolicy):
         net_arch: Optional[List[int]] = None,
         activation_fn: Type[nn.Module] = nn.ReLU,
         normalize_images: bool = True,
-        #var_penal=False
+        var_penal : bool =False,
+        gamma : float =1
+
     ):
         super(QuantileNetwork, self).__init__(
             observation_space,
             action_space,
             features_extractor=features_extractor,
             normalize_images=normalize_images,
-            #var_penal=var_penal
+            #var_penal=var_penal,
         )
 
         if net_arch is None:
@@ -61,6 +65,8 @@ class QuantileNetwork(BasePolicy):
         action_dim = self.action_space.n  # number of actions
         quantile_net = create_mlp(self.features_dim, action_dim * self.n_quantiles, self.net_arch, self.activation_fn)
         self.quantile_net = nn.Sequential(*quantile_net)
+        self.var_penal=var_penal
+        self.gamma=gamma
 
     def forward(self, obs: th.Tensor) -> th.Tensor:
         """
@@ -72,12 +78,20 @@ class QuantileNetwork(BasePolicy):
         quantiles = self.quantile_net(self.extract_features(obs))
         return quantiles.view(-1, self.n_quantiles, self.action_space.n)
 
-    def _predict(self, observation: th.Tensor, deterministic: bool = True,action_masks=None) -> th.Tensor:
-
-        if True==True:
-            q_values = self.forward(observation).mean(dim=1)- 0.99*self.forward(observation).var(dim=1)
+    def _predict(self, observation: th.Tensor, deterministic: bool = True,action_masks=None,var_penal=False,gamma=1) -> th.Tensor:
+        #print('gamma_fin',gamma)
+        if var_penal==True:
+            q_values = self.forward(observation).mean(dim=1)- gamma*self.forward(observation).var(dim=1)
+            #print("coucouc2")
+            #state=observation[0] ### only first observation of the batch?
+            #var=q_values[0,:].var()
+            #logger.record("train/var {}".format(np.int(observation)), var)
+            #print('helleo')
         else :
             q_values = self.forward(observation).mean(dim=1)
+            #state=observation[0] ### only first observation of the batch?
+            #var=q_values[0,:].var()
+            #logger.record("train/var {}".format(np.int(observation)), var)
 
 
         # Greedy actionp
@@ -146,7 +160,7 @@ class QRDQNPolicy(BasePolicy):
             features_extractor_kwargs,
             optimizer_class=optimizer_class,
             optimizer_kwargs=optimizer_kwargs,
-            #var_penal=var_penal
+            #var_penal=var_penal,
         )
 
         if net_arch is None:
@@ -159,6 +173,7 @@ class QRDQNPolicy(BasePolicy):
         self.net_arch = net_arch
         self.activation_fn = activation_fn
         self.normalize_images = normalize_images
+        #self.var_penal=var_penal
 
         self.net_args = {
             "observation_space": self.observation_space,
@@ -194,8 +209,8 @@ class QRDQNPolicy(BasePolicy):
     def forward(self, obs: th.Tensor, deterministic: bool = True) -> th.Tensor:
         return self._predict(obs, deterministic=deterministic)
 
-    def _predict(self, obs: th.Tensor, deterministic: bool = True,action_masks: np.ndarray=None) -> th.Tensor:
-        return self.quantile_net._predict(obs, deterministic=deterministic,action_masks=action_masks)
+    def _predict(self, obs: th.Tensor, deterministic: bool = True,action_masks: np.ndarray=None,var_penal :bool=None,gamma : np.float=1 ) -> th.Tensor:
+        return self.quantile_net._predict(obs, deterministic=deterministic,action_masks=action_masks,var_penal=var_penal,gamma=gamma)
 
     def _get_constructor_parameters(self) -> Dict[str, Any]:
         data = super()._get_constructor_parameters()

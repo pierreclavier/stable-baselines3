@@ -61,7 +61,7 @@ class QNetwork(BasePolicy):
         """
         return self.q_net(self.extract_features(obs))
 
-    def _predict(self, observation: th.Tensor, deterministic: bool = True, action_masks=None ) -> th.Tensor:
+    def _predict(self, observation: th.Tensor, deterministic: bool = True, action_masks=None,var_penal=False ) -> th.Tensor:
         #print('mask_shape',action_masks.shape)
         q_values = self.forward(observation)
         #print("qvalues shape",q_values.shape)
@@ -176,7 +176,7 @@ class DQNPolicy(BasePolicy):
     def forward(self, obs: th.Tensor, deterministic: bool = True) -> th.Tensor:
         return self._predict(obs, deterministic=deterministic)
 
-    def _predict(self, obs: th.Tensor, deterministic: bool = True, action_masks: np.ndarray=None) -> th.Tensor:
+    def _predict(self, obs: th.Tensor, deterministic: bool = True, action_masks: np.ndarray=None, var_penal: bool=False,gamma :float=0.99) -> th.Tensor:
         return self.q_net._predict(obs, deterministic=deterministic,action_masks=action_masks)
 
     def _get_data(self) -> Dict[str, Any]:
