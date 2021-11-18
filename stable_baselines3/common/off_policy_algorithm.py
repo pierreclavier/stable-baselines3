@@ -2,7 +2,7 @@ import io
 import pathlib
 import time
 import warnings
-from typing import Any, Dict, Optional, Tuple, Type, Union, Callable
+from typing import Any, Dict, List, Optional, Tuple, Type, Union, Callable
 
 import gym
 import numpy as np
@@ -111,7 +111,7 @@ class OffPolicyAlgorithm(BaseAlgorithm):
         supported_action_spaces: Optional[Tuple[gym.spaces.Space, ...]] = None,
         action_mask_fn: Union[str, Callable[[gym.Env], np.ndarray]] = None,
         all_masks : Callable =None,
-        var_penal :bool =False,
+        penal : Optional[Union[bool,Dict[str, Any]]] ={},
 
     ):
 
@@ -151,9 +151,9 @@ class OffPolicyAlgorithm(BaseAlgorithm):
         self.n_episodes_rollout = n_episodes_rollout
         self.action_noise = action_noise
         self.optimize_memory_usage = optimize_memory_usage
-        self.var_penal=var_penal
+        self.penal=penal
 
-
+        #print("oof penal",penal)
         # Remove terminations (dones) that are due to time limit
         # see https://github.com/hill-a/stable-baselines/issues/863
         self.remove_time_limit_termination = remove_time_limit_termination
@@ -264,7 +264,7 @@ class OffPolicyAlgorithm(BaseAlgorithm):
         tb_log_name: str = "run",
         eval_log_path: Optional[str] = None,
         reset_num_timesteps: bool = True,
-        var_penal : bool=False
+        penal : Optional[Union[bool,Dict[str, Any]]]={}
     ) -> "OffPolicyAlgorithm":
 
         total_timesteps, callback = self._setup_learn(
@@ -273,7 +273,7 @@ class OffPolicyAlgorithm(BaseAlgorithm):
 
         callback.on_training_start(locals(), globals())
         self.total_timesteps=total_timesteps
-        self.var_penal=var_penal
+        self.penal=penal
         while self.num_timesteps < total_timesteps:
 
             rollout = self.collect_rollouts(
@@ -353,7 +353,7 @@ class OffPolicyAlgorithm(BaseAlgorithm):
 
 
             #print('1,',self.var_penal)
-            unscaled_action, _ = self.predict(self._last_obs, deterministic=False,action_masks=action_masks,var_penal=self.var_penal,gamma=self.gamma)
+            unscaled_action, _ = self.predict(self._last_obs, deterministic=False,action_masks=action_masks,penal=self.penal,gamma=self.gamma)
 
         # Rescale the action from [low, high] to [-1, 1]
         if isinstance(self.action_space, gym.spaces.Box):
@@ -382,7 +382,7 @@ class OffPolicyAlgorithm(BaseAlgorithm):
 
             logger.record("rollout/ep_rew_mean", safe_mean([ep_info["r"] for ep_info in self.ep_info_buffer]))
             logger.record("rollout/ep_len_mean", safe_mean([ep_info["l"] for ep_info in self.ep_info_buffer]))
-            logger.record("rollout/ep_rew_var",  safe_var([ep_info["r"] for ep_info in self.ep_info_buffer]) )    
+            logger.record("rollout/ep_rew_var",  safe_var([ep_info["r"] for ep_info in self.ep_info_buffer]) )
         logger.record("time/fps", fps)
         logger.record("time/time_elapsed", int(time.time() - self.start_time), exclude="tensorboard")
         logger.record("time/total timesteps", self.num_timesteps, exclude="tensorboard")

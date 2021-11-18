@@ -11,7 +11,7 @@ from stable_baselines3.common.policies import ActorCriticPolicy
 from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, Schedule
 from stable_baselines3.common.utils import explained_variance, get_schedule_fn
 print("hello")
-
+print("guapa")
 class PPO(OnPolicyAlgorithm):
     """
     Proximal Policy Optimization algorithm (PPO) (clip version)
@@ -137,6 +137,8 @@ class PPO(OnPolicyAlgorithm):
                 assert self.clip_range_vf > 0, "`clip_range_vf` must be positive, " "pass `None` to deactivate vf clipping"
 
             self.clip_range_vf = get_schedule_fn(self.clip_range_vf)
+
+        print("pitout")
 
     def train(self) -> None:
         """

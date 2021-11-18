@@ -3,7 +3,7 @@
 import collections
 from abc import ABC, abstractmethod
 from functools import partial
-from typing import Any, Dict, List, Optional, Tuple, Type, Union
+from typing import Any, Dict, List, Optional, Tuple, Type, Union, Callable
 
 import gym
 import numpy as np
@@ -231,7 +231,7 @@ class BasePolicy(BaseModel):
         observation: th.Tensor,
         deterministic: bool = False,
         action_masks: np.ndarray = None,
-        var_penal :bool =None
+        penal : Optional[Union[bool,Dict[str, Any]]] ={}
     ) -> th.Tensor:
         """
         Get the action according to the policy for a given observation.
@@ -252,7 +252,7 @@ class BasePolicy(BaseModel):
         mask: Optional[np.ndarray] = None,
         deterministic: bool = False,
         action_masks: np.ndarray = None,
-        var_penal : bool  = False,
+        penal : Optional[Union[bool,Dict[str, Any]]] ={},
         gamma :float = 0.99
         #var_penal : bool =False
     ) -> Tuple[np.ndarray, Optional[np.ndarray]]:
@@ -303,7 +303,8 @@ class BasePolicy(BaseModel):
             #print(observation,deterministic,action_masks)
             #print("holla2")
             #print('3',var_penal) #self.var_penal)
-            actions = self._predict(observation, deterministic, action_masks=action_masks,var_penal=var_penal,gamma=gamma)
+            #print("policies common penal ",penal)
+            actions = self._predict(observation, deterministic, action_masks=action_masks,penal=penal)
             #print('action_predict',actions.shape)
         # Convert to numpy
         actions = actions.cpu().numpy()
@@ -630,7 +631,7 @@ class ActorCriticPolicy(BasePolicy):
         observation: th.Tensor,
         deterministic: bool = False,
         action_masks: np.ndarray = None,
-        var_penal :bool = False
+        penal : Optional[Union[bool,Dict[str, Any]]] ={},
     ) -> th.Tensor:
         """
         Get the action according to the policy for a given observation.

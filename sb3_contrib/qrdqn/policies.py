@@ -1,4 +1,4 @@
-from typing import Any, Dict, List, Optional, Type
+from typing import Any, Dict, List, Optional, Tuple, Type, Union, Callable
 
 import gym
 import torch as th
@@ -40,9 +40,9 @@ class QuantileNetwork(BasePolicy):
         n_quantiles: int = 200,
         net_arch: Optional[List[int]] = None,
         activation_fn: Type[nn.Module] = nn.ReLU,
-        normalize_images: bool = True,
-        var_penal : bool =False,
-        gamma : float =1
+        normalize_images: bool = True
+        #penal : Optional[Union[bool,Dict[str, Any]]] =False
+        #gamma : float =0.99
 
     ):
         super(QuantileNetwork, self).__init__(
@@ -65,8 +65,22 @@ class QuantileNetwork(BasePolicy):
         action_dim = self.action_space.n  # number of actions
         quantile_net = create_mlp(self.features_dim, action_dim * self.n_quantiles, self.net_arch, self.activation_fn)
         self.quantile_net = nn.Sequential(*quantile_net)
-        self.var_penal=var_penal
-        self.gamma=gamma
+        # self.penal=penal
+        # print(self.penal)
+        # if self.penal is not None:
+        #     if 'var_penal' in self.penal.keys():
+        #          self.var_penal=self.penal['var_penal']
+        #     else:
+        #         self.var_penal=False
+        #
+        #     if 'ent_penal' in self.penal.keys():
+        #         self.ent_penal=self.penal['ent_penal']
+        #     else:
+        #         self.ent_penal=False
+
+
+
+        #self.gamma=gamma
 
     def forward(self, obs: th.Tensor) -> th.Tensor:
         """
@@ -78,15 +92,22 @@ class QuantileNetwork(BasePolicy):
         quantiles = self.quantile_net(self.extract_features(obs))
         return quantiles.view(-1, self.n_quantiles, self.action_space.n)
 
-    def _predict(self, observation: th.Tensor, deterministic: bool = True,action_masks=None,var_penal=False,gamma=1) -> th.Tensor:
+    def _predict(self, observation: th.Tensor, deterministic: bool = True,action_masks=None,penal: Optional[Union[bool,Dict[str, Any]]]={},gamma=1) -> th.Tensor:
         #print('gamma_fin',gamma)
-        if var_penal==True:
-            q_values = self.forward(observation).mean(dim=1)- gamma*self.forward(observation).var(dim=1)
-            #print("coucouc2")
+
+        if penal!={}:
+            if "var_penal" in penal.keys():
+                self.var_penal=penal["var_penal"]
+                #
+                q_values = self.forward(observation).mean(dim=1)- self.var_penal*self.forward(observation).std(dim=1)   #a modifier
+                #print("coucouc2")
             #state=observation[0] ### only first observation of the batch?
             #var=q_values[0,:].var()
             #logger.record("train/var {}".format(np.int(observation)), var)
             #print('helleo')
+            #print("hello")
+            #print("action masks", action_masks.shape)
+
         else :
             q_values = self.forward(observation).mean(dim=1)
             #state=observation[0] ### only first observation of the batch?
@@ -96,7 +117,9 @@ class QuantileNetwork(BasePolicy):
 
         # Greedy actionp
         #print("q_values",q_values.shape)
-        q_values[0,np.logical_not(action_masks)]=-1000
+
+        if action_masks is not None:
+            q_values[0,np.logical_not(action_masks)]=-1000
 
         action = q_values.argmax(dim=1).reshape(-1)
         return action
@@ -209,8 +232,9 @@ class QRDQNPolicy(BasePolicy):
     def forward(self, obs: th.Tensor, deterministic: bool = True) -> th.Tensor:
         return self._predict(obs, deterministic=deterministic)
 
-    def _predict(self, obs: th.Tensor, deterministic: bool = True,action_masks: np.ndarray=None,var_penal :bool=None,gamma : np.float=1 ) -> th.Tensor:
-        return self.quantile_net._predict(obs, deterministic=deterministic,action_masks=action_masks,var_penal=var_penal,gamma=gamma)
+    def _predict(self, obs: th.Tensor, deterministic: bool = True,action_masks: np.ndarray=None,penal :Optional[Union[bool,Dict[str, Any]]] ={},gamma : np.float=1 ) -> th.Tensor:
+        #print("policies predict" ,penal )
+        return self.quantile_net._predict(obs, deterministic=deterministic,action_masks=action_masks,penal=penal,gamma=gamma)
 
     def _get_constructor_parameters(self) -> Dict[str, Any]:
         data = super()._get_constructor_parameters()

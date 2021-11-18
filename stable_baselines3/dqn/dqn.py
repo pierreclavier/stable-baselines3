@@ -86,7 +86,7 @@ class DQN(OffPolicyAlgorithm):
         device: Union[th.device, str] = "auto",
         _init_setup_model: bool = True,
         action_mask_fn: Union[str, Callable[[Env], np.ndarray]] = None,
-        all_masks : Callable =None,
+        all_masks : Optional[Callable] =None,
     ):
 
         super(DQN, self).__init__(
@@ -126,7 +126,9 @@ class DQN(OffPolicyAlgorithm):
         # Linear schedule will be defined in `_setup_model()`
         self.exploration_schedule = None
         self.q_net, self.q_net_target = None, None
-        self.all_masks=all_masks()
+
+        if all_masks is not None:
+            self.all_masks=all_masks()
 
         if _init_setup_model:
             self._setup_model()
@@ -183,8 +185,13 @@ class DQN(OffPolicyAlgorithm):
                 #print("next_q_values",next_q_values.shape)#next_q_values[0,:]
 
                 #print("dim",next_q_values,action_mask.shape)
+                
+                if is_vecenv_wrapped(self.env, VecActionMasker):
 
-                next_q_values[np.logical_not(action_mask)]=-1000
+                    next_q_values[np.logical_not(action_mask)]=-1000
+
+
+
 
                 #print("q_masked",next_q_values)
 

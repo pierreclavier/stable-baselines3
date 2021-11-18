@@ -76,7 +76,7 @@ class QRDQN(OffPolicyAlgorithm):
         learning_starts: int = 50000,
         batch_size: Optional[int] = 32,
         tau: float = 1.0,
-        gamma: float = 0.99,
+        gamma: Optional[float] = 0.99,
         train_freq: int = 4,
         gradient_steps: int = 1,
         replay_buffer_class: Optional[ReplayBuffer] = None,
@@ -95,8 +95,8 @@ class QRDQN(OffPolicyAlgorithm):
         device: Union[th.device, str] = "auto",
         _init_setup_model: bool = True,
         action_mask_fn: Union[str, Callable[[Env], np.ndarray]] = None,
-        all_masks : Callable =None,
-        var_penal :bool =False,
+        all_masks : Optional[Callable] =None,
+        penal : Optional[Union[bool,Dict[str, Any]]] ={},  #a moodifier
     ):
 
         super(QRDQN, self).__init__(
@@ -125,7 +125,7 @@ class QRDQN(OffPolicyAlgorithm):
             supported_action_spaces=(gym.spaces.Discrete,),
             action_mask_fn=action_mask_fn,
             all_masks=all_masks,
-            #var_penal=var_penal,
+            penal=penal,
 
 
         )
@@ -140,10 +140,23 @@ class QRDQN(OffPolicyAlgorithm):
         # Linear schedule will be defined in `_setup_model()`
         self.exploration_schedule = None
         self.quantile_net, self.quantile_net_target = None, None
-        self.all_masks=all_masks()
 
-        self.var_penal=var_penal
-        #print('init va penal',self.var_penal)
+        if all_masks is not None:
+            self.all_masks=all_masks()
+
+        # if var_penal!= False:
+        #
+        #
+        #     self.var_penal=var_penal
+
+        self.penal=penal
+
+        if self.penal !={}:
+             if 'var_penal' in self.penal.keys():
+                 self.var_penal=self.penal['var_penal']
+             if 'entropic_penal' in self.penal.keys():
+                 self.ent_penal=self.penal['ent_penal']
+
         self.gamma=gamma
 
 
@@ -180,6 +193,10 @@ class QRDQN(OffPolicyAlgorithm):
         logger.record("rollout/exploration rate", self.exploration_rate)
 
     def plot_graph(self):
+        """
+        A function to plot some graphs of densities of rewards
+
+        """
 
         #print(self.all_masks.shape)
         states=th.tensor(np.arange(self.all_masks.shape[0],dtype='int'),dtype=th.int).reshape(-1,1)
@@ -237,6 +254,9 @@ class QRDQN(OffPolicyAlgorithm):
 
 
     def plot_graph2(self,state):
+        """
+        to plot densities of reward
+        """
 
         #print(self.all_masks.shape)
         states=th.tensor(np.arange(self.all_masks.shape[0],dtype='int'),dtype=th.int).reshape(-1,1)
@@ -251,7 +271,7 @@ class QRDQN(OffPolicyAlgorithm):
         fig.suptitle('Distribution of returns for state {}'.format(np.int(state)))
 
         for count,action in enumerate( np.arange(24,dtype='int') ):
-            print(action)
+            #print(action)
             points=next_quantiles[np.int(state),:,action].detach().numpy()
             var=points.var()
 
@@ -275,17 +295,6 @@ class QRDQN(OffPolicyAlgorithm):
 
 
 
-
-
-
-
-
-
-
-
-
-
-
     def train(self, gradient_steps: int, batch_size: int = 100) -> None:
         # Update learning rate according to schedule
         self._update_learning_rate(self.policy.optimizer)
@@ -297,31 +306,38 @@ class QRDQN(OffPolicyAlgorithm):
             #a modifer pour sampler les bonnes trajectoires
             replay_data = self.replay_buffer.sample(batch_size, env=self._vec_normalize_env)
 
+
+            #  for action masking for some environment
             if is_vecenv_wrapped(self.env, VecActionMasker):
                 action_mask=np.array([self.all_masks[replay_data.next_observations[k]] for k in range(len(replay_data.next_observations))])
                 action_mask=action_mask.reshape(action_mask.shape[0],1,action_mask.shape[1])
 
-
+            # core of the algorithm
             with th.no_grad():
-                #print(replay_data.next_observations)
                 # Compute the quantiles of next observation
                 next_quantiles = self.quantile_net_target(replay_data.next_observations)
-
-
 
                 #print(next_quantiles.shape)
                 #print("next_quantiles",next_quantiles.shape,next_quantiles[0,:,30])
                 # Compute the greedy actions which maximize the next Q values size batch*nb_quantiles*nb_action
+                # if var_penal==True:
+                #     next_greedy_actions= next_quantiles.mean(dim=1, keepdim=True) - self.var_reg*next_quantiles.std(dim=1, keepdim=True)
 
-                if self.var_penal==True:
-                    #print("coucou1")
-                    next_greedy_actions= next_quantiles.mean(dim=1, keepdim=True) - self.gamma*next_quantiles.var(dim=1, keepdim=True)
+                if 'var_penal' in self.penal.keys():
+                    next_greedy_actions= next_quantiles.mean(dim=1, keepdim=True) - self.var_penal*next_quantiles.std(dim=1, keepdim=True)
+                    #print(next_greedy_actions)
+                #
+                if 'ent_penal' in self.penal.keys():  # a modifier
+                #     #signe à regarder
+                    next_greedy_actions= next_greedy_actions - self.ent_reg
 
 
                 else :
                     next_greedy_actions = next_quantiles.mean(dim=1, keepdim=True)
 
-                next_greedy_actions[np.logical_not(action_mask)]=-1000
+                if is_vecenv_wrapped(self.env, VecActionMasker):
+
+                    next_greedy_actions[np.logical_not(action_mask)]=-1000
 
                 #print("next_greedy_quantiles",next_greedy_actions)
                 next_greedy_actions =next_greedy_actions.argmax(dim=2, keepdim=True)
@@ -332,8 +348,8 @@ class QRDQN(OffPolicyAlgorithm):
                 # Follow greedy policy: use the one with the highest Q values
                 next_quantiles = next_quantiles.gather(dim=2, index=next_greedy_actions).squeeze(dim=2)
                 # 1-step TD target
-                target_quantiles = replay_data.rewards + (1 - replay_data.dones) * self.gamma * next_quantiles
-
+                target_quantiles = replay_data.rewards + (1 - replay_data.dones) * self.gamma * next_quantiles # rajouter ici la penalisation?
+                #print('taget', target_quantiles.shape)
             # Get current quantile estimates
             current_quantiles = self.quantile_net(replay_data.observations)
 
@@ -363,6 +379,8 @@ class QRDQN(OffPolicyAlgorithm):
 
 
 
+
+
         #self.logger.record("train/n_updates", self._n_updates, exclude="tensorboard")
         #self.logger.record("train/loss", np.mean(losses))
 
@@ -376,7 +394,7 @@ class QRDQN(OffPolicyAlgorithm):
         mask: Optional[np.ndarray] = None,
         deterministic: bool = False,
         action_masks: Optional[np.ndarray] =None,
-        var_penal :bool = False,
+        penal : Optional[Union[bool,Dict[str, Any]]] =False,
         gamma : float = 0.99
     ) -> Tuple[np.ndarray, Optional[np.ndarray]]:
         """
@@ -414,7 +432,8 @@ class QRDQN(OffPolicyAlgorithm):
                     action = np.array(self.action_space.sample())
         else:
             #print('2', self.var_penal,var_penal)
-            action, state = self.policy.predict(observation, state, mask, deterministic,action_masks=action_masks,var_penal=var_penal,gamma=gamma)
+            #print("qrdqn predict ",self.penal)
+            action, state = self.policy.predict(observation, state, mask, deterministic,action_masks=action_masks,penal=self.penal,gamma=gamma)
 
 
 
@@ -433,7 +452,7 @@ class QRDQN(OffPolicyAlgorithm):
         tb_log_name: str = "QRDQN",
         eval_log_path: Optional[str] = None,
         reset_num_timesteps: bool = True,
-        var_penal=False,
+        penal : Optional[Union[bool,Dict[str, Any]]] ={},
     ) -> OffPolicyAlgorithm:
 
         return super(QRDQN, self).learn(
@@ -446,7 +465,7 @@ class QRDQN(OffPolicyAlgorithm):
             tb_log_name=tb_log_name,
             eval_log_path=eval_log_path,
             reset_num_timesteps=reset_num_timesteps,
-            var_penal=var_penal
+            penal=penal
         )
 
     def _excluded_save_params(self) -> List[str]:
