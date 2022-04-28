@@ -9,7 +9,6 @@ from stable_baselines3.common.type_aliases import (GymEnv, MaybeCallback,
 from stable_baselines3.common.utils import explained_variance
 from torch.nn import functional as F
 
-print("hello_new")
 
 
 class A2C(OnPolicyAlgorithm):
