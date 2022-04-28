@@ -3,10 +3,11 @@ from typing import Dict, List, Tuple, Type, Union
 
 import gym
 import torch as th
-from torch import nn
-
-from stable_baselines3.common.preprocessing import get_flattened_obs_dim, is_image_space
+from stable_baselines3.common.preprocessing import (get_flattened_obs_dim,
+                                                    is_image_space)
+from stable_baselines3.common.type_aliases import TensorDict
 from stable_baselines3.common.utils import get_device
+from torch import nn
 
 
 class BaseFeaturesExtractor(nn.Module):
@@ -40,7 +41,9 @@ class FlattenExtractor(BaseFeaturesExtractor):
     """
 
     def __init__(self, observation_space: gym.Space):
-        super(FlattenExtractor, self).__init__(observation_space, get_flattened_obs_dim(observation_space))
+        super(FlattenExtractor, self).__init__(
+            observation_space, get_flattened_obs_dim(observation_space)
+        )
         self.flatten = nn.Flatten()
 
     def forward(self, observations: th.Tensor) -> th.Tensor:
@@ -63,10 +66,10 @@ class NatureCNN(BaseFeaturesExtractor):
         super(NatureCNN, self).__init__(observation_space, features_dim)
         # We assume CxHxW images (channels first)
         # Re-ordering will be done by pre-preprocessing or wrapper
-        assert is_image_space(observation_space), (
+        assert is_image_space(observation_space, check_channels=False), (
             "You should use NatureCNN "
             f"only with images not with {observation_space}\n"
-            "(you are probably using `CnnPolicy` instead of `MlpPolicy`)\n"
+            "(you are probably using `CnnPolicy` instead of `MlpPolicy` or `MultiInputPolicy`)\n"
             "If you are using a custom environment,\n"
             "please check it using our env checker:\n"
             "https://stable-baselines3.readthedocs.io/en/master/common/env_checker.html"
@@ -84,7 +87,9 @@ class NatureCNN(BaseFeaturesExtractor):
 
         # Compute shape by doing one forward pass
         with th.no_grad():
-            n_flatten = self.cnn(th.as_tensor(observation_space.sample()[None]).float()).shape[1]
+            n_flatten = self.cnn(
+                th.as_tensor(observation_space.sample()[None]).float()
+            ).shape[1]
 
         self.linear = nn.Sequential(nn.Linear(n_flatten, features_dim), nn.ReLU())
 
@@ -93,7 +98,11 @@ class NatureCNN(BaseFeaturesExtractor):
 
 
 def create_mlp(
-    input_dim: int, output_dim: int, net_arch: List[int], activation_fn: Type[nn.Module] = nn.ReLU, squash_output: bool = False
+    input_dim: int,
+    output_dim: int,
+    net_arch: List[int],
+    activation_fn: Type[nn.Module] = nn.ReLU,
+    squash_output: bool = False,
 ) -> List[nn.Module]:
     """
     Create a multi layer perceptron (MLP), which is
@@ -165,26 +174,37 @@ class MlpExtractor(nn.Module):
         super(MlpExtractor, self).__init__()
         device = get_device(device)
         shared_net, policy_net, value_net = [], [], []
-        policy_only_layers = []  # Layer sizes of the network that only belongs to the policy network
-        value_only_layers = []  # Layer sizes of the network that only belongs to the value network
+        policy_only_layers = (
+            []
+        )  # Layer sizes of the network that only belongs to the policy network
+        value_only_layers = (
+            []
+        )  # Layer sizes of the network that only belongs to the value network
         last_layer_dim_shared = feature_dim
 
         # Iterate through the shared layers and build the shared parts of the network
         for layer in net_arch:
             if isinstance(layer, int):  # Check that this is a shared layer
-                layer_size = layer
                 # TODO: give layer a meaningful name
-                shared_net.append(nn.Linear(last_layer_dim_shared, layer_size))
+                shared_net.append(
+                    nn.Linear(last_layer_dim_shared, layer)
+                )  # add linear of size layer
                 shared_net.append(activation_fn())
-                last_layer_dim_shared = layer_size
+                last_layer_dim_shared = layer
             else:
-                assert isinstance(layer, dict), "Error: the net_arch list can only contain ints and dicts"
+                assert isinstance(
+                    layer, dict
+                ), "Error: the net_arch list can only contain ints and dicts"
                 if "pi" in layer:
-                    assert isinstance(layer["pi"], list), "Error: net_arch[-1]['pi'] must contain a list of integers."
+                    assert isinstance(
+                        layer["pi"], list
+                    ), "Error: net_arch[-1]['pi'] must contain a list of integers."
                     policy_only_layers = layer["pi"]
 
                 if "vf" in layer:
-                    assert isinstance(layer["vf"], list), "Error: net_arch[-1]['vf'] must contain a list of integers."
+                    assert isinstance(
+                        layer["vf"], list
+                    ), "Error: net_arch[-1]['vf'] must contain a list of integers."
                     value_only_layers = layer["vf"]
                 break  # From here on the network splits up in policy and value network
 
@@ -192,15 +212,21 @@ class MlpExtractor(nn.Module):
         last_layer_dim_vf = last_layer_dim_shared
 
         # Build the non-shared part of the network
-        for pi_layer_size, vf_layer_size in zip_longest(policy_only_layers, value_only_layers):
+        for pi_layer_size, vf_layer_size in zip_longest(
+            policy_only_layers, value_only_layers
+        ):
             if pi_layer_size is not None:
-                assert isinstance(pi_layer_size, int), "Error: net_arch[-1]['pi'] must only contain integers."
+                assert isinstance(
+                    pi_layer_size, int
+                ), "Error: net_arch[-1]['pi'] must only contain integers."
                 policy_net.append(nn.Linear(last_layer_dim_pi, pi_layer_size))
                 policy_net.append(activation_fn())
                 last_layer_dim_pi = pi_layer_size
 
             if vf_layer_size is not None:
-                assert isinstance(vf_layer_size, int), "Error: net_arch[-1]['vf'] must only contain integers."
+                assert isinstance(
+                    vf_layer_size, int
+                ), "Error: net_arch[-1]['vf'] must only contain integers."
                 value_net.append(nn.Linear(last_layer_dim_vf, vf_layer_size))
                 value_net.append(activation_fn())
                 last_layer_dim_vf = vf_layer_size
@@ -223,8 +249,57 @@ class MlpExtractor(nn.Module):
         shared_latent = self.shared_net(features)
         return self.policy_net(shared_latent), self.value_net(shared_latent)
 
+    def forward_actor(self, features: th.Tensor) -> th.Tensor:
+        return self.policy_net(self.shared_net(features))
 
-def get_actor_critic_arch(net_arch: Union[List[int], Dict[str, List[int]]]) -> Tuple[List[int], List[int]]:
+    def forward_critic(self, features: th.Tensor) -> th.Tensor:
+        return self.value_net(self.shared_net(features))
+
+
+class CombinedExtractor(BaseFeaturesExtractor):
+    """
+    Combined feature extractor for Dict observation spaces.
+    Builds a feature extractor for each key of the space. Input from each space
+    is fed through a separate submodule (CNN or MLP, depending on input shape),
+    the output features are concatenated and fed through additional MLP network ("combined").
+
+    :param observation_space:
+    :param cnn_output_dim: Number of features to output from each CNN submodule(s). Defaults to
+        256 to avoid exploding network sizes.
+    """
+
+    def __init__(self, observation_space: gym.spaces.Dict, cnn_output_dim: int = 256):
+        # TODO we do not know features-dim here before going over all the items, so put something there. This is dirty!
+        super(CombinedExtractor, self).__init__(observation_space, features_dim=1)
+
+        extractors = {}
+
+        total_concat_size = 0
+        for key, subspace in observation_space.spaces.items():
+            if is_image_space(subspace):
+                extractors[key] = NatureCNN(subspace, features_dim=cnn_output_dim)
+                total_concat_size += cnn_output_dim
+            else:
+                # The observation key is a vector, flatten it if needed
+                extractors[key] = nn.Flatten()
+                total_concat_size += get_flattened_obs_dim(subspace)
+
+        self.extractors = nn.ModuleDict(extractors)
+
+        # Update the features dim manually
+        self._features_dim = total_concat_size
+
+    def forward(self, observations: TensorDict) -> th.Tensor:
+        encoded_tensor_list = []
+
+        for key, extractor in self.extractors.items():
+            encoded_tensor_list.append(extractor(observations[key]))
+        return th.cat(encoded_tensor_list, dim=1)
+
+
+def get_actor_critic_arch(
+    net_arch: Union[List[int], Dict[str, List[int]]]
+) -> Tuple[List[int], List[int]]:
     """
     Get the actor and critic network architectures for off-policy actor-critic algorithms (SAC, TD3, DDPG).
 
@@ -257,8 +332,14 @@ def get_actor_critic_arch(net_arch: Union[List[int], Dict[str, List[int]]]) -> T
     if isinstance(net_arch, list):
         actor_arch, critic_arch = net_arch, net_arch
     else:
-        assert isinstance(net_arch, dict), "Error: the net_arch can only contain be a list of ints or a dict"
-        assert "pi" in net_arch, "Error: no key 'pi' was provided in net_arch for the actor network"
-        assert "qf" in net_arch, "Error: no key 'qf' was provided in net_arch for the critic network"
+        assert isinstance(
+            net_arch, dict
+        ), "Error: the net_arch can only contain be a list of ints or a dict"
+        assert (
+            "pi" in net_arch
+        ), "Error: no key 'pi' was provided in net_arch for the actor network"
+        assert (
+            "qf" in net_arch
+        ), "Error: no key 'qf' was provided in net_arch for the critic network"
         actor_arch, critic_arch = net_arch["pi"], net_arch["qf"]
     return actor_arch, critic_arch

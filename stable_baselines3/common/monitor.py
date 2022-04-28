@@ -10,7 +10,6 @@ from typing import Dict, List, Optional, Tuple, Union
 import gym
 import numpy as np
 import pandas
-
 from stable_baselines3.common.type_aliases import GymObs, GymStepReturn
 
 
@@ -55,7 +54,9 @@ class Monitor(gym.Wrapper):
         self.episode_lengths = []
         self.episode_times = []
         self.total_steps = 0
-        self.current_reset_info = {}  # extra info about the current episode, that was passed in during reset()
+        self.current_reset_info = (
+            {}
+        )  # extra info about the current episode, that was passed in during reset()
 
     def reset(self, **kwargs) -> GymObs:
         """
@@ -74,7 +75,9 @@ class Monitor(gym.Wrapper):
         for key in self.reset_keywords:
             value = kwargs.get(key)
             if value is None:
-                raise ValueError(f"Expected you to pass keyword argument {key} into reset")
+                raise ValueError(
+                    f"Expected you to pass keyword argument {key} into reset"
+                )
             self.current_reset_info[key] = value
         return self.env.reset(**kwargs)
 
@@ -93,7 +96,11 @@ class Monitor(gym.Wrapper):
             self.needs_reset = True
             ep_rew = sum(self.rewards)
             ep_len = len(self.rewards)
-            ep_info = {"r": round(ep_rew, 6), "l": ep_len, "t": round(time.time() - self.t_start, 6)}
+            ep_info = {
+                "r": round(ep_rew, 6),
+                "l": ep_len,
+                "t": round(time.time() - self.t_start, 6),
+            }
             for key in self.info_keywords:
                 ep_info[key] = info[key]
             self.episode_returns.append(ep_rew)
@@ -168,7 +175,7 @@ class ResultsWriter:
     def __init__(
         self,
         filename: str = "",
-        header: Dict[str, Union[float, str]] = None,
+        header: Optional[Dict[str, Union[float, str]]] = None,
         extra_keys: Tuple[str, ...] = (),
     ):
         if header is None:
@@ -178,9 +185,11 @@ class ResultsWriter:
                 filename = os.path.join(filename, Monitor.EXT)
             else:
                 filename = filename + "." + Monitor.EXT
-        self.file_handler = open(filename, "wt")
+        self.file_handler = open(filename, "wt", newline="\n")
         self.file_handler.write("#%s\n" % json.dumps(header))
-        self.logger = csv.DictWriter(self.file_handler, fieldnames=("r", "l", "t") + extra_keys)
+        self.logger = csv.DictWriter(
+            self.file_handler, fieldnames=("r", "l", "t") + extra_keys
+        )
         self.logger.writeheader()
         self.file_handler.flush()
 
@@ -220,7 +229,9 @@ def load_results(path: str) -> pandas.DataFrame:
     """
     monitor_files = get_monitor_files(path)
     if len(monitor_files) == 0:
-        raise LoadMonitorResultsError(f"No monitor files of the form *{Monitor.EXT} found in {path}")
+        raise LoadMonitorResultsError(
+            f"No monitor files of the form *{Monitor.EXT} found in {path}"
+        )
     data_frames, headers = [], []
     for file_name in monitor_files:
         with open(file_name, "rt") as file_handler:

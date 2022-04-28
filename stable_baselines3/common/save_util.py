@@ -14,11 +14,10 @@ import zipfile
 from typing import Any, Dict, Optional, Tuple, Union
 
 import cloudpickle
+import stable_baselines3 as sb3
 import torch as th
-
-import stable_baselines3
 from stable_baselines3.common.type_aliases import TensorDict
-from stable_baselines3.common.utils import get_device
+from stable_baselines3.common.utils import get_device, get_system_info
 
 
 def recursive_getattr(obj: Any, attr: str, *args) -> Any:
@@ -113,7 +112,11 @@ def data_to_json(data: Dict[str, Any]) -> str:
             # e.g. numpy scalars)
             if hasattr(data_item, "__dict__") or isinstance(data_item, dict):
                 # Take elements from __dict__ for custom classes
-                item_generator = data_item.items if isinstance(data_item, dict) else data_item.__dict__.items
+                item_generator = (
+                    data_item.items
+                    if isinstance(data_item, dict)
+                    else data_item.__dict__.items
+                )
                 for variable_name, variable_item in item_generator():
                     # Check if serializable. If not, just include the
                     # string-representation of the object.
@@ -127,7 +130,9 @@ def data_to_json(data: Dict[str, Any]) -> str:
     return json_string
 
 
-def json_to_data(json_string: str, custom_objects: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def json_to_data(
+    json_string: str, custom_objects: Optional[Dict[str, Any]] = None
+) -> Dict[str, Any]:
     """
     Turn JSON serialization of class-parameters back into dictionary.
 
@@ -176,7 +181,12 @@ def json_to_data(json_string: str, custom_objects: Optional[Dict[str, Any]] = No
 
 
 @functools.singledispatch
-def open_path(path: Union[str, pathlib.Path, io.BufferedIOBase], mode: str, verbose: int = 0, suffix: Optional[str] = None):
+def open_path(
+    path: Union[str, pathlib.Path, io.BufferedIOBase],
+    mode: str,
+    verbose: int = 0,
+    suffix: Optional[str] = None,
+):
     """
     Opens a path for reading or writing with a preferred suffix and raises debug information.
     If the provided path is a derivative of io.BufferedIOBase it ensures that the file
@@ -215,7 +225,9 @@ def open_path(path: Union[str, pathlib.Path, io.BufferedIOBase], mode: str, verb
 
 
 @open_path.register(str)
-def open_path_str(path: str, mode: str, verbose: int = 0, suffix: Optional[str] = None) -> io.BufferedIOBase:
+def open_path_str(
+    path: str, mode: str, verbose: int = 0, suffix: Optional[str] = None
+) -> io.BufferedIOBase:
     """
     Open a path given by a string. If writing to the path, the function ensures
     that the path exists.
@@ -233,7 +245,9 @@ def open_path_str(path: str, mode: str, verbose: int = 0, suffix: Optional[str] 
 
 
 @open_path.register(pathlib.Path)
-def open_path_pathlib(path: pathlib.Path, mode: str, verbose: int = 0, suffix: Optional[str] = None) -> io.BufferedIOBase:
+def open_path_pathlib(
+    path: pathlib.Path, mode: str, verbose: int = 0, suffix: Optional[str] = None
+) -> io.BufferedIOBase:
     """
     Open a path given by a string. If writing to the path, the function ensures
     that the path exists.
@@ -286,9 +300,9 @@ def open_path_pathlib(path: pathlib.Path, mode: str, verbose: int = 0, suffix: O
 
 def save_to_zip_file(
     save_path: Union[str, pathlib.Path, io.BufferedIOBase],
-    data: Dict[str, Any] = None,
-    params: Dict[str, Any] = None,
-    pytorch_variables: Dict[str, Any] = None,
+    data: Optional[Dict[str, Any]] = None,
+    params: Optional[Dict[str, Any]] = None,
+    pytorch_variables: Optional[Dict[str, Any]] = None,
     verbose: int = 0,
 ) -> None:
     """
@@ -314,17 +328,23 @@ def save_to_zip_file(
         if data is not None:
             archive.writestr("data", serialized_data)
         if pytorch_variables is not None:
-            with archive.open("pytorch_variables.pth", mode="w") as pytorch_variables_file:
+            with archive.open(
+                "pytorch_variables.pth", mode="w"
+            ) as pytorch_variables_file:
                 th.save(pytorch_variables, pytorch_variables_file)
         if params is not None:
             for file_name, dict_ in params.items():
                 with archive.open(file_name + ".pth", mode="w") as param_file:
                     th.save(dict_, param_file)
         # Save metadata: library version when file was saved
-        archive.writestr("_stable_baselines3_version", stable_baselines3.__version__)
+        archive.writestr("_stable_baselines3_version", sb3.__version__)
+        # Save system info about the current python env
+        archive.writestr("system_info.txt", get_system_info(print_info=False)[1])
 
 
-def save_to_pkl(path: Union[str, pathlib.Path, io.BufferedIOBase], obj: Any, verbose: int = 0) -> None:
+def save_to_pkl(
+    path: Union[str, pathlib.Path, io.BufferedIOBase], obj: Any, verbose: int = 0
+) -> None:
     """
     Save an object to path creating the necessary folders along the way.
     If the path exists and is a directory, it will raise a warning and rename the path.
@@ -342,7 +362,9 @@ def save_to_pkl(path: Union[str, pathlib.Path, io.BufferedIOBase], obj: Any, ver
         pickle.dump(obj, file_handler, protocol=pickle.HIGHEST_PROTOCOL)
 
 
-def load_from_pkl(path: Union[str, pathlib.Path, io.BufferedIOBase], verbose: int = 0) -> Any:
+def load_from_pkl(
+    path: Union[str, pathlib.Path, io.BufferedIOBase], verbose: int = 0
+) -> Any:
     """
     Load an object from the path. If a suffix is provided in the path, it will use that suffix.
     If the path does not exist, it will attempt to load using the .pkl suffix.
@@ -362,6 +384,7 @@ def load_from_zip_file(
     custom_objects: Optional[Dict[str, Any]] = None,
     device: Union[th.device, str] = "auto",
     verbose: int = 0,
+    print_system_info: bool = False,
 ) -> (Tuple[Optional[Dict[str, Any]], Optional[TensorDict], Optional[TensorDict]]):
     """
     Load model data from a .zip archive
@@ -376,6 +399,9 @@ def load_from_zip_file(
         ``keras.models.load_model``. Useful when you have an object in
         file that can not be deserialized.
     :param device: Device on which the code should run.
+    :param verbose: Verbosity level, 0 means only warnings, 2 means debug information.
+    :param print_system_info: Whether to print or not the system info
+        about the saved model.
     :return: Class parameters, model state_dicts (aka "params", dict of state_dict)
         and dict of pytorch variables
     """
@@ -395,6 +421,17 @@ def load_from_zip_file(
             pytorch_variables = None
             params = {}
 
+            # Debug system info first
+            if print_system_info:
+                if "system_info.txt" in namelist:
+                    print("== SAVED MODEL SYSTEM INFO ==")
+                    print(archive.read("system_info.txt").decode())
+                else:
+                    warnings.warn(
+                        "The model was saved with SB3 <= 1.2.0 and thus cannot print system information.",
+                        UserWarning,
+                    )
+
             if "data" in namelist and load_data:
                 # Load class parameters that are stored
                 # with either JSON or pickle (not PyTorch variables).
@@ -404,7 +441,11 @@ def load_from_zip_file(
             # Check for all .pth files and load them using th.load.
             # "pytorch_variables.pth" stores PyTorch variables, and any other .pth
             # files store state_dicts of variables with custom names (e.g. policy, policy.optimizer)
-            pth_files = [file_name for file_name in namelist if os.path.splitext(file_name)[1] == ".pth"]
+            pth_files = [
+                file_name
+                for file_name in namelist
+                if os.path.splitext(file_name)[1] == ".pth"
+            ]
             for file_path in pth_files:
                 with archive.open(file_path, mode="r") as param_file:
                     # File has to be seekable, but param_file is not, so load in BytesIO first
@@ -417,7 +458,10 @@ def load_from_zip_file(
                     # Remove ".pth" ending with splitext
                     th_object = th.load(file_content, map_location=device)
                     # "tensors.pth" was renamed "pytorch_variables.pth" in v0.9.0, see PR #138
-                    if file_path == "pytorch_variables.pth" or file_path == "tensors.pth":
+                    if (
+                        file_path == "pytorch_variables.pth"
+                        or file_path == "tensors.pth"
+                    ):
                         # PyTorch variables (not state_dicts)
                         pytorch_variables = th_object
                     else:

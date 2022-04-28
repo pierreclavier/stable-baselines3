@@ -2,11 +2,9 @@ from typing import Callable, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
-
 # import matplotlib
 # matplotlib.use('TkAgg')  # Can change to 'Agg' for non-interactive mode
 from matplotlib import pyplot as plt
-
 from stable_baselines3.common.monitor import load_results
 
 X_TIMESTEPS = "timesteps"
@@ -29,7 +27,9 @@ def rolling_window(array: np.ndarray, window: int) -> np.ndarray:
     return np.lib.stride_tricks.as_strided(array, shape=shape, strides=strides)
 
 
-def window_func(var_1: np.ndarray, var_2: np.ndarray, window: int, func: Callable) -> Tuple[np.ndarray, np.ndarray]:
+def window_func(
+    var_1: np.ndarray, var_2: np.ndarray, window: int, func: Callable
+) -> Tuple[np.ndarray, np.ndarray]:
     """
     Apply a function to the rolling window of 2 arrays
 
@@ -54,7 +54,7 @@ def ts2xy(data_frame: pd.DataFrame, x_axis: str) -> Tuple[np.ndarray, np.ndarray
     :return: the x and y output
     """
     if x_axis == X_TIMESTEPS:
-        x_var = np.cumsum(data_frame.l.values)
+        x_var = data_frame.l.values
         y_var = data_frame.r.values
     elif x_axis == X_EPISODES:
         x_var = np.arange(len(data_frame))
@@ -69,7 +69,10 @@ def ts2xy(data_frame: pd.DataFrame, x_axis: str) -> Tuple[np.ndarray, np.ndarray
 
 
 def plot_curves(
-    xy_list: List[Tuple[np.ndarray, np.ndarray]], x_axis: str, title: str, figsize: Tuple[int, int] = (8, 2)
+    xy_list: List[Tuple[np.ndarray, np.ndarray]],
+    x_axis: str,
+    title: str,
+    figsize: Tuple[int, int] = (8, 2),
 ) -> None:
     """
     plot the curves
@@ -99,7 +102,11 @@ def plot_curves(
 
 
 def plot_results(
-    dirs: List[str], num_timesteps: Optional[int], x_axis: str, task_name: str, figsize: Tuple[int, int] = (8, 2)
+    dirs: List[str],
+    num_timesteps: Optional[int],
+    x_axis: str,
+    task_name: str,
+    figsize: Tuple[int, int] = (8, 2),
 ) -> None:
     """
     Plot the results using csv files from ``Monitor`` wrapper.

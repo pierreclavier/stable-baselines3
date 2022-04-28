@@ -4,14 +4,13 @@ from typing import Any, Dict, List, Optional, Tuple, Type, Union
 import gym
 import numpy as np
 import torch as th
-
-from stable_baselines3.common import logger
 from stable_baselines3.common.base_class import BaseAlgorithm
-from stable_baselines3.common.buffers import RolloutBuffer
+from stable_baselines3.common.buffers import DictRolloutBuffer, RolloutBuffer
 from stable_baselines3.common.callbacks import BaseCallback
-from stable_baselines3.common.policies import ActorCriticPolicy
-from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, Schedule
-from stable_baselines3.common.utils import safe_mean
+from stable_baselines3.common.policies import ActorCriticPolicy, BasePolicy
+from stable_baselines3.common.type_aliases import (GymEnv, MaybeCallback,
+                                                   Schedule)
+from stable_baselines3.common.utils import obs_as_tensor, safe_mean
 from stable_baselines3.common.vec_env import VecEnv
 
 
@@ -35,6 +34,7 @@ class OnPolicyAlgorithm(BaseAlgorithm):
         instead of action noise exploration (default: False)
     :param sde_sample_freq: Sample a new noise matrix every n steps when using gSDE
         Default: -1 (only sample at the beginning of the rollout)
+    :param policy_base: The base policy used by this method
     :param tensorboard_log: the log location for tensorboard (if None, no logging)
     :param create_eval_env: Whether to create a second environment that will be
         used for evaluating the agent periodically. (Only available when passing string for the environment)
@@ -62,6 +62,7 @@ class OnPolicyAlgorithm(BaseAlgorithm):
         max_grad_norm: float,
         use_sde: bool,
         sde_sample_freq: int,
+        policy_base: Type[BasePolicy] = ActorCriticPolicy,
         tensorboard_log: Optional[str] = None,
         create_eval_env: bool = False,
         monitor_wrapper: bool = True,
@@ -76,7 +77,7 @@ class OnPolicyAlgorithm(BaseAlgorithm):
         super(OnPolicyAlgorithm, self).__init__(
             policy=policy,
             env=env,
-            policy_base=ActorCriticPolicy,
+            policy_base=policy_base,
             learning_rate=learning_rate,
             policy_kwargs=policy_kwargs,
             verbose=verbose,
@@ -105,11 +106,17 @@ class OnPolicyAlgorithm(BaseAlgorithm):
         self._setup_lr_schedule()
         self.set_random_seed(self.seed)
 
-        self.rollout_buffer = RolloutBuffer(
+        buffer_cls = (
+            DictRolloutBuffer
+            if isinstance(self.observation_space, gym.spaces.Dict)
+            else RolloutBuffer
+        )
+
+        self.rollout_buffer = buffer_cls(
             self.n_steps,
             self.observation_space,
             self.action_space,
-            self.device,
+            device=self.device,
             gamma=self.gamma,
             gae_lambda=self.gae_lambda,
             n_envs=self.n_envs,
@@ -124,7 +131,11 @@ class OnPolicyAlgorithm(BaseAlgorithm):
         self.policy = self.policy.to(self.device)
 
     def collect_rollouts(
-        self, env: VecEnv, callback: BaseCallback, rollout_buffer: RolloutBuffer, n_rollout_steps: int
+        self,
+        env: VecEnv,
+        callback: BaseCallback,
+        rollout_buffer: RolloutBuffer,
+        n_rollout_steps: int,
     ) -> bool:
         """
         Collect experiences using the current policy and fill a ``RolloutBuffer``.
@@ -140,6 +151,9 @@ class OnPolicyAlgorithm(BaseAlgorithm):
             collected, False if callback terminated rollout prematurely.
         """
         assert self._last_obs is not None, "No previous observation was provided"
+        # Switch to eval mode (this affects batch norm / dropout)
+        self.policy.set_training_mode(False)
+
         n_steps = 0
         rollout_buffer.reset()
         # Sample new weights for the state dependent exploration
@@ -149,13 +163,17 @@ class OnPolicyAlgorithm(BaseAlgorithm):
         callback.on_rollout_start()
 
         while n_steps < n_rollout_steps:
-            if self.use_sde and self.sde_sample_freq > 0 and n_steps % self.sde_sample_freq == 0:
+            if (
+                self.use_sde
+                and self.sde_sample_freq > 0
+                and n_steps % self.sde_sample_freq == 0
+            ):
                 # Sample a new noise matrix
                 self.policy.reset_noise(env.num_envs)
 
             with th.no_grad():
-                # Convert to pytorch tensor
-                obs_tensor = th.as_tensor(self._last_obs).to(self.device)
+                # Convert to pytorch tensor or to TensorDict
+                obs_tensor = obs_as_tensor(self._last_obs, self.device)
                 actions, values, log_probs = self.policy.forward(obs_tensor)
             actions = actions.cpu().numpy()
 
@@ -163,7 +181,9 @@ class OnPolicyAlgorithm(BaseAlgorithm):
             clipped_actions = actions
             # Clip the actions to avoid out of bound error
             if isinstance(self.action_space, gym.spaces.Box):
-                clipped_actions = np.clip(actions, self.action_space.low, self.action_space.high)
+                clipped_actions = np.clip(
+                    actions, self.action_space.low, self.action_space.high
+                )
 
             new_obs, rewards, dones, infos = env.step(clipped_actions)
 
@@ -180,14 +200,36 @@ class OnPolicyAlgorithm(BaseAlgorithm):
             if isinstance(self.action_space, gym.spaces.Discrete):
                 # Reshape in case of discrete action
                 actions = actions.reshape(-1, 1)
-            rollout_buffer.add(self._last_obs, actions, rewards, self._last_episode_starts, values, log_probs)
+
+            # Handle timeout by bootstraping with value function
+            # see GitHub issue #633
+            for idx, done in enumerate(dones):
+                if (
+                    done
+                    and infos[idx].get("terminal_observation") is not None
+                    and infos[idx].get("TimeLimit.truncated", False)
+                ):
+                    terminal_obs = self.policy.obs_to_tensor(
+                        infos[idx]["terminal_observation"]
+                    )[0]
+                    with th.no_grad():
+                        terminal_value = self.policy.predict_values(terminal_obs)[0]
+                    rewards[idx] += self.gamma * terminal_value
+
+            rollout_buffer.add(
+                self._last_obs,
+                actions,
+                rewards,
+                self._last_episode_starts,
+                values,
+                log_probs,
+            )
             self._last_obs = new_obs
             self._last_episode_starts = dones
 
         with th.no_grad():
             # Compute value for the last timestep
-            obs_tensor = th.as_tensor(new_obs).to(self.device)
-            _, values, _ = self.policy.forward(obs_tensor)
+            values = self.policy.predict_values(obs_as_tensor(new_obs, self.device))
 
         rollout_buffer.compute_returns_and_advantage(last_values=values, dones=dones)
 
@@ -217,14 +259,23 @@ class OnPolicyAlgorithm(BaseAlgorithm):
         iteration = 0
 
         total_timesteps, callback = self._setup_learn(
-            total_timesteps, eval_env, callback, eval_freq, n_eval_episodes, eval_log_path, reset_num_timesteps, tb_log_name
+            total_timesteps,
+            eval_env,
+            callback,
+            eval_freq,
+            n_eval_episodes,
+            eval_log_path,
+            reset_num_timesteps,
+            tb_log_name,
         )
 
         callback.on_training_start(locals(), globals())
 
         while self.num_timesteps < total_timesteps:
 
-            continue_training = self.collect_rollouts(self.env, callback, self.rollout_buffer, n_rollout_steps=self.n_steps)
+            continue_training = self.collect_rollouts(
+                self.env, callback, self.rollout_buffer, n_rollout_steps=self.n_steps
+            )
 
             if continue_training is False:
                 break
@@ -234,15 +285,30 @@ class OnPolicyAlgorithm(BaseAlgorithm):
 
             # Display training infos
             if log_interval is not None and iteration % log_interval == 0:
-                fps = int(self.num_timesteps / (time.time() - self.start_time))
-                logger.record("time/iterations", iteration, exclude="tensorboard")
+                fps = int(
+                    (self.num_timesteps - self._num_timesteps_at_start)
+                    / (time.time() - self.start_time)
+                )
+                self.logger.record("time/iterations", iteration, exclude="tensorboard")
                 if len(self.ep_info_buffer) > 0 and len(self.ep_info_buffer[0]) > 0:
-                    logger.record("rollout/ep_rew_mean", safe_mean([ep_info["r"] for ep_info in self.ep_info_buffer]))
-                    logger.record("rollout/ep_len_mean", safe_mean([ep_info["l"] for ep_info in self.ep_info_buffer]))
-                logger.record("time/fps", fps)
-                logger.record("time/time_elapsed", int(time.time() - self.start_time), exclude="tensorboard")
-                logger.record("time/total_timesteps", self.num_timesteps, exclude="tensorboard")
-                logger.dump(step=self.num_timesteps)
+                    self.logger.record(
+                        "rollout/ep_rew_mean",
+                        safe_mean([ep_info["r"] for ep_info in self.ep_info_buffer]),
+                    )
+                    self.logger.record(
+                        "rollout/ep_len_mean",
+                        safe_mean([ep_info["l"] for ep_info in self.ep_info_buffer]),
+                    )
+                self.logger.record("time/fps", fps)
+                self.logger.record(
+                    "time/time_elapsed",
+                    int(time.time() - self.start_time),
+                    exclude="tensorboard",
+                )
+                self.logger.record(
+                    "time/total_timesteps", self.num_timesteps, exclude="tensorboard"
+                )
+                self.logger.dump(step=self.num_timesteps)
 
             self.train()
 

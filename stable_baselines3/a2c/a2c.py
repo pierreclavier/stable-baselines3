@@ -2,13 +2,14 @@ from typing import Any, Dict, Optional, Type, Union
 
 import torch as th
 from gym import spaces
-from torch.nn import functional as F
-
-from stable_baselines3.common import logger
 from stable_baselines3.common.on_policy_algorithm import OnPolicyAlgorithm
 from stable_baselines3.common.policies import ActorCriticPolicy
-from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, Schedule
+from stable_baselines3.common.type_aliases import (GymEnv, MaybeCallback,
+                                                   Schedule)
 from stable_baselines3.common.utils import explained_variance
+from torch.nn import functional as F
+
+print("hello_new")
 
 
 class A2C(OnPolicyAlgorithm):
@@ -110,7 +111,9 @@ class A2C(OnPolicyAlgorithm):
         # (original implementation) rather than Adam
         if use_rms_prop and "optimizer_class" not in self.policy_kwargs:
             self.policy_kwargs["optimizer_class"] = th.optim.RMSprop
-            self.policy_kwargs["optimizer_kwargs"] = dict(alpha=0.99, eps=rms_prop_eps, weight_decay=0)
+            self.policy_kwargs["optimizer_kwargs"] = dict(
+                alpha=0.99, eps=rms_prop_eps, weight_decay=0
+            )
 
         if _init_setup_model:
             self._setup_model()
@@ -120,6 +123,9 @@ class A2C(OnPolicyAlgorithm):
         Update policy using the currently gathered
         rollout buffer (one gradient step over whole data).
         """
+        # Switch to train mode (this affects batch norm / dropout)
+        self.policy.set_training_mode(True)
+
         # Update optimizer learning rate
         self._update_learning_rate(self.policy.optimizer)
 
@@ -131,14 +137,17 @@ class A2C(OnPolicyAlgorithm):
                 # Convert discrete action from float to long
                 actions = actions.long().flatten()
 
-            # TODO: avoid second computation of everything because of the gradient
-            values, log_prob, entropy = self.policy.evaluate_actions(rollout_data.observations, actions)
+            values, log_prob, entropy = self.policy.evaluate_actions(
+                rollout_data.observations, actions
+            )
             values = values.flatten()
 
             # Normalize advantage (not present in the original implementation)
             advantages = rollout_data.advantages
             if self.normalize_advantage:
-                advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+                advantages = (advantages - advantages.mean()) / (
+                    advantages.std() + 1e-8
+                )
 
             # Policy gradient loss
             policy_loss = -(advantages * log_prob).mean()
@@ -153,7 +162,9 @@ class A2C(OnPolicyAlgorithm):
             else:
                 entropy_loss = -th.mean(entropy)
 
-            loss = policy_loss + self.ent_coef * entropy_loss + self.vf_coef * value_loss
+            loss = (
+                policy_loss + self.ent_coef * entropy_loss + self.vf_coef * value_loss
+            )
 
             # Optimization step
             self.policy.optimizer.zero_grad()
@@ -163,16 +174,18 @@ class A2C(OnPolicyAlgorithm):
             th.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
             self.policy.optimizer.step()
 
-        explained_var = explained_variance(self.rollout_buffer.values.flatten(), self.rollout_buffer.returns.flatten())
+        explained_var = explained_variance(
+            self.rollout_buffer.values.flatten(), self.rollout_buffer.returns.flatten()
+        )
 
         self._n_updates += 1
-        logger.record("train/n_updates", self._n_updates, exclude="tensorboard")
-        logger.record("train/explained_variance", explained_var)
-        logger.record("train/entropy_loss", entropy_loss.item())
-        logger.record("train/policy_loss", policy_loss.item())
-        logger.record("train/value_loss", value_loss.item())
+        self.logger.record("train/n_updates", self._n_updates, exclude="tensorboard")
+        self.logger.record("train/explained_variance", explained_var)
+        self.logger.record("train/entropy_loss", entropy_loss.item())
+        self.logger.record("train/policy_loss", policy_loss.item())
+        self.logger.record("train/value_loss", value_loss.item())
         if hasattr(self.policy, "log_std"):
-            logger.record("train/std", th.exp(self.policy.log_std).mean().item())
+            self.logger.record("train/std", th.exp(self.policy.log_std).mean().item())
 
     def learn(
         self,

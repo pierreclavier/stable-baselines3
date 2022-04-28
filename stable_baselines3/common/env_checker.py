@@ -4,7 +4,8 @@ from typing import Union
 import gym
 import numpy as np
 from gym import spaces
-
+from stable_baselines3.common.preprocessing import \
+    is_image_space_channels_first
 from stable_baselines3.common.vec_env import DummyVecEnv, VecCheckNan
 
 
@@ -16,14 +17,14 @@ def _is_numpy_array_space(space: spaces.Space) -> bool:
     return not isinstance(space, (spaces.Dict, spaces.Tuple))
 
 
-def _check_image_input(observation_space: spaces.Box) -> None:
+def _check_image_input(observation_space: spaces.Box, key: str = "") -> None:
     """
     Check that the input will be compatible with Stable-Baselines
     when the observation is apparently an image.
     """
     if observation_space.dtype != np.uint8:
         warnings.warn(
-            "It seems that your observation is an image but the `dtype` "
+            f"It seems that your observation {key} is an image but the `dtype` "
             "of your observation_space is not `np.uint8`. "
             "If your observation is not an image, we recommend you to flatten the observation "
             "to have only a 1D vector"
@@ -31,38 +32,51 @@ def _check_image_input(observation_space: spaces.Box) -> None:
 
     if np.any(observation_space.low != 0) or np.any(observation_space.high != 255):
         warnings.warn(
-            "It seems that your observation space is an image but the "
+            f"It seems that your observation space {key} is an image but the "
             "upper and lower bounds are not in [0, 255]. "
             "Because the CNN policy normalize automatically the observation "
             "you may encounter issue if the values are not in that range."
         )
 
-    if observation_space.shape[0] < 36 or observation_space.shape[1] < 36:
+    non_channel_idx = 0
+    # Check only if width/height of the image is big enough
+    if is_image_space_channels_first(observation_space):
+        non_channel_idx = -1
+
+    if observation_space.shape[non_channel_idx] < 36 or observation_space.shape[1] < 36:
         warnings.warn(
-            "The minimal resolution for an image is 36x36 for the default CnnPolicy. "
-            "You might need to use a custom `cnn_extractor` "
-            "cf https://stable-baselines3.readthedocs.io/en/master/guide/custom_policy.html"
+            "The minimal resolution for an image is 36x36 for the default `CnnPolicy`. "
+            "You might need to use a custom feature extractor "
+            "cf. https://stable-baselines3.readthedocs.io/en/master/guide/custom_policy.html"
         )
 
 
-def _check_unsupported_spaces(env: gym.Env, observation_space: spaces.Space, action_space: spaces.Space) -> None:
+def _check_unsupported_spaces(
+    env: gym.Env, observation_space: spaces.Space, action_space: spaces.Space
+) -> None:
     """Emit warnings when the observation space or action space used is not supported by Stable-Baselines."""
 
-    if isinstance(observation_space, spaces.Dict) and not isinstance(env, gym.GoalEnv):
-        warnings.warn(
-            "The observation space is a Dict but the environment is not a gym.GoalEnv "
-            "(cf https://github.com/openai/gym/blob/master/gym/core.py), "
-            "this is currently not supported by Stable Baselines "
-            "(cf https://github.com/hill-a/stable-baselines/issues/133), "
-            "you will need to use a custom policy. "
-        )
+    if isinstance(observation_space, spaces.Dict):
+        nested_dict = False
+        for space in observation_space.spaces.values():
+            if isinstance(space, spaces.Dict):
+                nested_dict = True
+        if nested_dict:
+            warnings.warn(
+                "Nested observation spaces are not supported by Stable Baselines3 "
+                "(Dict spaces inside Dict space). "
+                "You should flatten it to have only one level of keys."
+                "For example, `dict(space1=dict(space2=Box(), space3=Box()), spaces4=Discrete())` "
+                "is not supported but `dict(space2=Box(), spaces3=Box(), spaces4=Discrete())` is."
+            )
 
     if isinstance(observation_space, spaces.Tuple):
         warnings.warn(
             "The observation space is a Tuple,"
-            "this is currently not supported by Stable Baselines "
-            "(cf https://github.com/hill-a/stable-baselines/issues/133), "
-            "you will need to flatten the observation and maybe use a custom policy. "
+            "this is currently not supported by Stable Baselines3. "
+            "However, you can convert it to a Dict observation space "
+            "(cf. https://github.com/openai/gym/blob/master/gym/spaces/dict.py). "
+            "which is supported by SB3."
         )
 
     if not _is_numpy_array_space(action_space):
@@ -81,7 +95,11 @@ def _check_nan(env: gym.Env) -> None:
         _, _, _, _ = vec_env.step(action)
 
 
-def _check_obs(obs: Union[tuple, dict, np.ndarray, int], observation_space: spaces.Space, method_name: str) -> None:
+def _check_obs(
+    obs: Union[tuple, dict, np.ndarray, int],
+    observation_space: spaces.Space,
+    method_name: str,
+) -> None:
     """
     Check that the observation returned by the environment
     correspond to the declared one.
@@ -89,49 +107,102 @@ def _check_obs(obs: Union[tuple, dict, np.ndarray, int], observation_space: spac
     if not isinstance(observation_space, spaces.Tuple):
         assert not isinstance(
             obs, tuple
-        ), "The observation returned by the `{}()` method should be a single value, not a tuple".format(method_name)
+        ), f"The observation returned by the `{method_name}()` method should be a single value, not a tuple"
 
     # The check for a GoalEnv is done by the base class
     if isinstance(observation_space, spaces.Discrete):
-        assert isinstance(obs, int), "The observation returned by `{}()` method must be an int".format(method_name)
+        assert isinstance(
+            obs, int
+        ), f"The observation returned by `{method_name}()` method must be an int"
     elif _is_numpy_array_space(observation_space):
-        assert isinstance(obs, np.ndarray), "The observation returned by `{}()` method must be a numpy array".format(
-            method_name
-        )
+        assert isinstance(
+            obs, np.ndarray
+        ), f"The observation returned by `{method_name}()` method must be a numpy array"
 
     assert observation_space.contains(
         obs
-    ), "The observation returned by the `{}()` method does not match the given observation space".format(method_name)
+    ), f"The observation returned by the `{method_name}()` method does not match the given observation space"
 
 
-def _check_returned_values(env: gym.Env, observation_space: spaces.Space, action_space: spaces.Space) -> None:
+def _check_box_obs(observation_space: spaces.Box, key: str = "") -> None:
+    """
+    Check that the observation space is correctly formatted
+    when dealing with a ``Box()`` space. In particular, it checks:
+    - that the dimensions are big enough when it is an image, and that the type matches
+    - that the observation has an expected shape (warn the user if not)
+    """
+    # If image, check the low and high values, the type and the number of channels
+    # and the shape (minimal value)
+    if len(observation_space.shape) == 3:
+        _check_image_input(observation_space)
+
+    if len(observation_space.shape) not in [1, 3]:
+        warnings.warn(
+            f"Your observation {key} has an unconventional shape (neither an image, nor a 1D vector). "
+            "We recommend you to flatten the observation "
+            "to have only a 1D vector or use a custom policy to properly process the data."
+        )
+
+
+def _check_returned_values(
+    env: gym.Env, observation_space: spaces.Space, action_space: spaces.Space
+) -> None:
     """
     Check the returned values by the env when calling `.reset()` or `.step()` methods.
     """
     # because env inherits from gym.Env, we assume that `reset()` and `step()` methods exists
     obs = env.reset()
 
-    _check_obs(obs, observation_space, "reset")
+    if isinstance(observation_space, spaces.Dict):
+        assert isinstance(
+            obs, dict
+        ), "The observation returned by `reset()` must be a dictionary"
+        for key in observation_space.spaces.keys():
+            try:
+                _check_obs(obs[key], observation_space.spaces[key], "reset")
+            except AssertionError as e:
+                raise AssertionError(f"Error while checking key={key}: " + str(e))
+    else:
+        _check_obs(obs, observation_space, "reset")
 
     # Sample a random action
     action = action_space.sample()
     data = env.step(action)
 
-    assert len(data) == 4, "The `step()` method must return four values: obs, reward, done, info"
+    assert (
+        len(data) == 4
+    ), "The `step()` method must return four values: obs, reward, done, info"
 
     # Unpack
     obs, reward, done, info = data
 
-    _check_obs(obs, observation_space, "step")
+    if isinstance(observation_space, spaces.Dict):
+        assert isinstance(
+            obs, dict
+        ), "The observation returned by `step()` must be a dictionary"
+        for key in observation_space.spaces.keys():
+            try:
+                _check_obs(obs[key], observation_space.spaces[key], "step")
+            except AssertionError as e:
+                raise AssertionError(f"Error while checking key={key}: " + str(e))
+
+    else:
+        _check_obs(obs, observation_space, "step")
 
     # We also allow int because the reward will be cast to float
-    assert isinstance(reward, (float, int)), "The reward returned by `step()` must be a float"
+    assert isinstance(
+        reward, (float, int)
+    ), "The reward returned by `step()` must be a float"
     assert isinstance(done, bool), "The `done` signal must be a boolean"
-    assert isinstance(info, dict), "The `info` returned by `step()` must be a python dictionary"
+    assert isinstance(
+        info, dict
+    ), "The `info` returned by `step()` must be a python dictionary"
 
     if isinstance(env, gym.GoalEnv):
         # For a GoalEnv, the keys are checked at reset
-        assert reward == env.compute_reward(obs["achieved_goal"], obs["desired_goal"], info)
+        assert reward == env.compute_reward(
+            obs["achieved_goal"], obs["desired_goal"], info
+        )
 
 
 def _check_spaces(env: gym.Env) -> None:
@@ -142,14 +213,25 @@ def _check_spaces(env: gym.Env) -> None:
     # Helper to link to the code, because gym has no proper documentation
     gym_spaces = " cf https://github.com/openai/gym/blob/master/gym/spaces/"
 
-    assert hasattr(env, "observation_space"), "You must specify an observation space (cf gym.spaces)" + gym_spaces
-    assert hasattr(env, "action_space"), "You must specify an action space (cf gym.spaces)" + gym_spaces
+    assert hasattr(env, "observation_space"), (
+        "You must specify an observation space (cf gym.spaces)" + gym_spaces
+    )
+    assert hasattr(env, "action_space"), (
+        "You must specify an action space (cf gym.spaces)" + gym_spaces
+    )
 
-    assert isinstance(env.observation_space, spaces.Space), "The observation space must inherit from gym.spaces" + gym_spaces
-    assert isinstance(env.action_space, spaces.Space), "The action space must inherit from gym.spaces" + gym_spaces
+    assert isinstance(env.observation_space, spaces.Space), (
+        "The observation space must inherit from gym.spaces" + gym_spaces
+    )
+    assert isinstance(env.action_space, spaces.Space), (
+        "The action space must inherit from gym.spaces" + gym_spaces
+    )
 
 
-def _check_render(env: gym.Env, warn: bool = True, headless: bool = False) -> None:
+# Check render cannot be covered by CI
+def _check_render(
+    env: gym.Env, warn: bool = True, headless: bool = False
+) -> None:  # pragma: no cover
     """
     Check the declared render modes and the `render()`/`close()`
     method of the environment.
@@ -210,27 +292,31 @@ def check_env(env: gym.Env, warn: bool = True, skip_render_check: bool = True) -
     if warn:
         _check_unsupported_spaces(env, observation_space, action_space)
 
-        # If image, check the low and high values, the type and the number of channels
-        # and the shape (minimal value)
-        if isinstance(observation_space, spaces.Box) and len(observation_space.shape) == 3:
-            _check_image_input(observation_space)
-
-        if isinstance(observation_space, spaces.Box) and len(observation_space.shape) not in [1, 3]:
-            warnings.warn(
-                "Your observation has an unconventional shape (neither an image, nor a 1D vector). "
-                "We recommend you to flatten the observation "
-                "to have only a 1D vector"
-            )
+        obs_spaces = (
+            observation_space.spaces
+            if isinstance(observation_space, spaces.Dict)
+            else {"": observation_space}
+        )
+        for key, space in obs_spaces.items():
+            if isinstance(space, spaces.Box):
+                _check_box_obs(space, key)
 
         # Check for the action space, it may lead to hard-to-debug issues
         if isinstance(action_space, spaces.Box) and (
             np.any(np.abs(action_space.low) != np.abs(action_space.high))
-            or np.any(np.abs(action_space.low) > 1)
-            or np.any(np.abs(action_space.high) > 1)
+            or np.any(action_space.low != -1)
+            or np.any(action_space.high != 1)
         ):
             warnings.warn(
                 "We recommend you to use a symmetric and normalized Box action space (range=[-1, 1]) "
                 "cf https://stable-baselines3.readthedocs.io/en/master/guide/rl_tips.html"
+            )
+
+        if isinstance(action_space, spaces.Box) and action_space.dtype != np.dtype(
+            np.float32
+        ):
+            warnings.warn(
+                f"Your action space has dtype {action_space.dtype}, we recommend using np.float32 to avoid cast errors."
             )
 
     # ============ Check the returned values ===============
@@ -238,7 +324,7 @@ def check_env(env: gym.Env, warn: bool = True, skip_render_check: bool = True) -
 
     # ==== Check the render method and the declared render modes ====
     if not skip_render_check:
-        _check_render(env, warn=warn)
+        _check_render(env, warn=warn)  # pragma: no cover
 
     # The check only works with numpy arrays
     if _is_numpy_array_space(observation_space) and _is_numpy_array_space(action_space):

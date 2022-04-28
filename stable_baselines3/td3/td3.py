@@ -3,14 +3,14 @@ from typing import Any, Dict, List, Optional, Tuple, Type, Union
 import gym
 import numpy as np
 import torch as th
-from torch.nn import functional as F
-
-from stable_baselines3.common import logger
+from stable_baselines3.common.buffers import ReplayBuffer
 from stable_baselines3.common.noise import ActionNoise
 from stable_baselines3.common.off_policy_algorithm import OffPolicyAlgorithm
-from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, Schedule
+from stable_baselines3.common.type_aliases import (GymEnv, MaybeCallback,
+                                                   Schedule)
 from stable_baselines3.common.utils import polyak_update
 from stable_baselines3.td3.policies import TD3Policy
+from torch.nn import functional as F
 
 
 class TD3(OffPolicyAlgorithm):
@@ -39,6 +39,9 @@ class TD3(OffPolicyAlgorithm):
         during the rollout.
     :param action_noise: the action noise type (None by default), this can help
         for hard exploration problem. Cf common.noise for the different action noise type.
+    :param replay_buffer_class: Replay buffer class to use (for instance ``HerReplayBuffer``).
+        If ``None``, it will be automatically selected.
+    :param replay_buffer_kwargs: Keyword arguments to pass to the replay buffer on creation.
     :param optimize_memory_usage: Enable a memory efficient variant of the replay buffer
         at a cost of more complexity.
         See https://github.com/DLR-RM/stable-baselines3/issues/37#issuecomment-637501195
@@ -62,7 +65,7 @@ class TD3(OffPolicyAlgorithm):
         policy: Union[str, Type[TD3Policy]],
         env: Union[GymEnv, str],
         learning_rate: Union[float, Schedule] = 1e-3,
-        buffer_size: int = 1000000,  # 1e6
+        buffer_size: int = 1_000_000,  # 1e6
         learning_starts: int = 100,
         batch_size: int = 100,
         tau: float = 0.005,
@@ -70,13 +73,15 @@ class TD3(OffPolicyAlgorithm):
         train_freq: Union[int, Tuple[int, str]] = (1, "episode"),
         gradient_steps: int = -1,
         action_noise: Optional[ActionNoise] = None,
+        replay_buffer_class: Optional[ReplayBuffer] = None,
+        replay_buffer_kwargs: Optional[Dict[str, Any]] = None,
         optimize_memory_usage: bool = False,
         policy_delay: int = 2,
         target_policy_noise: float = 0.2,
         target_noise_clip: float = 0.5,
         tensorboard_log: Optional[str] = None,
         create_eval_env: bool = False,
-        policy_kwargs: Dict[str, Any] = None,
+        policy_kwargs: Optional[Dict[str, Any]] = None,
         verbose: int = 0,
         seed: Optional[int] = None,
         device: Union[th.device, str] = "auto",
@@ -96,6 +101,8 @@ class TD3(OffPolicyAlgorithm):
             train_freq,
             gradient_steps,
             action_noise=action_noise,
+            replay_buffer_class=replay_buffer_class,
+            replay_buffer_kwargs=replay_buffer_kwargs,
             policy_kwargs=policy_kwargs,
             tensorboard_log=tensorboard_log,
             verbose=verbose,
@@ -105,6 +112,7 @@ class TD3(OffPolicyAlgorithm):
             sde_support=False,
             optimize_memory_usage=optimize_memory_usage,
             supported_action_spaces=(gym.spaces.Box),
+            support_multi_env=True,
         )
 
         self.policy_delay = policy_delay
@@ -125,6 +133,8 @@ class TD3(OffPolicyAlgorithm):
         self.critic_target = self.policy.critic_target
 
     def train(self, gradient_steps: int, batch_size: int = 100) -> None:
+        # Switch to train mode (this affects batch norm / dropout)
+        self.policy.set_training_mode(True)
 
         # Update learning rate according to lr schedule
         self._update_learning_rate([self.actor.optimizer, self.critic.optimizer])
@@ -135,24 +145,43 @@ class TD3(OffPolicyAlgorithm):
 
             self._n_updates += 1
             # Sample replay buffer
-            replay_data = self.replay_buffer.sample(batch_size, env=self._vec_normalize_env)
+            replay_data = self.replay_buffer.sample(
+                batch_size, env=self._vec_normalize_env
+            )
 
             with th.no_grad():
                 # Select action according to policy and add clipped noise
-                noise = replay_data.actions.clone().data.normal_(0, self.target_policy_noise)
+                noise = replay_data.actions.clone().data.normal_(
+                    0, self.target_policy_noise
+                )
                 noise = noise.clamp(-self.target_noise_clip, self.target_noise_clip)
-                next_actions = (self.actor_target(replay_data.next_observations) + noise).clamp(-1, 1)
+                next_actions = (
+                    self.actor_target(replay_data.next_observations) + noise
+                ).clamp(-1, 1)
 
                 # Compute the next Q-values: min over all critics targets
-                next_q_values = th.cat(self.critic_target(replay_data.next_observations, next_actions), dim=1)
+                next_q_values = th.cat(
+                    self.critic_target(replay_data.next_observations, next_actions),
+                    dim=1,
+                )
                 next_q_values, _ = th.min(next_q_values, dim=1, keepdim=True)
-                target_q_values = replay_data.rewards + (1 - replay_data.dones) * self.gamma * next_q_values
+                target_q_values = (
+                    replay_data.rewards
+                    + (1 - replay_data.dones) * self.gamma * next_q_values
+                )
 
             # Get current Q-values estimates for each critic network
-            current_q_values = self.critic(replay_data.observations, replay_data.actions)
+            current_q_values = self.critic(
+                replay_data.observations, replay_data.actions
+            )
 
             # Compute critic loss
-            critic_loss = sum([F.mse_loss(current_q, target_q_values) for current_q in current_q_values])
+            critic_loss = sum(
+                [
+                    F.mse_loss(current_q, target_q_values)
+                    for current_q in current_q_values
+                ]
+            )
             critic_losses.append(critic_loss.item())
 
             # Optimize the critics
@@ -163,7 +192,9 @@ class TD3(OffPolicyAlgorithm):
             # Delayed policy updates
             if self._n_updates % self.policy_delay == 0:
                 # Compute actor loss
-                actor_loss = -self.critic.q1_forward(replay_data.observations, self.actor(replay_data.observations)).mean()
+                actor_loss = -self.critic.q1_forward(
+                    replay_data.observations, self.actor(replay_data.observations)
+                ).mean()
                 actor_losses.append(actor_loss.item())
 
                 # Optimize the actor
@@ -171,13 +202,17 @@ class TD3(OffPolicyAlgorithm):
                 actor_loss.backward()
                 self.actor.optimizer.step()
 
-                polyak_update(self.critic.parameters(), self.critic_target.parameters(), self.tau)
-                polyak_update(self.actor.parameters(), self.actor_target.parameters(), self.tau)
+                polyak_update(
+                    self.critic.parameters(), self.critic_target.parameters(), self.tau
+                )
+                polyak_update(
+                    self.actor.parameters(), self.actor_target.parameters(), self.tau
+                )
 
-        logger.record("train/n_updates", self._n_updates, exclude="tensorboard")
+        self.logger.record("train/n_updates", self._n_updates, exclude="tensorboard")
         if len(actor_losses) > 0:
-            logger.record("train/actor_loss", np.mean(actor_losses))
-        logger.record("train/critic_loss", np.mean(critic_losses))
+            self.logger.record("train/actor_loss", np.mean(actor_losses))
+        self.logger.record("train/critic_loss", np.mean(critic_losses))
 
     def learn(
         self,
@@ -205,7 +240,12 @@ class TD3(OffPolicyAlgorithm):
         )
 
     def _excluded_save_params(self) -> List[str]:
-        return super(TD3, self)._excluded_save_params() + ["actor", "critic", "actor_target", "critic_target"]
+        return super(TD3, self)._excluded_save_params() + [
+            "actor",
+            "critic",
+            "actor_target",
+            "critic_target",
+        ]
 
     def _get_torch_save_params(self) -> Tuple[List[str], List[str]]:
         state_dicts = ["policy", "actor.optimizer", "critic.optimizer"]
